@@ -27,31 +27,19 @@ typedef struct NQP_DIRECTORY_ENTRY
     nqp_dtype type;         // the type of file that this points at
 } nqp_dirent;
 
-typedef struct NQP_STAT
-{
-    off_t    size;          // the size of the file (in bytes)
-    uint64_t blocks;        // the number of blocks
-                            // maybe add time.
-} nqp_struct_stat;
-
-typedef enum NQP_WHENCE
-{
-    NQP_SEEK_SET,
-    NQP_SEEK_CUR,
-    NQP_SEEK_END
-} nqp_whence;
-
 typedef enum NQP_ERROR
 {
-    NQP_UNSUPPORTED_FS, // this file system is not supported by the
-                        // implementation.
+    NQP_UNSUPPORTED_FS = -1, // this file system is not supported by the
+                             // implementation.
 
-    NQP_FSCK_FAIL,      // the file system's super block did not pass the
-                        // basic file system check.
+    NQP_FSCK_FAIL = -2,      // the file system's super block did not pass the
+                             // basic file system check.
 
-    NQP_INVAL,        // an invalid argment was passed.
+    NQP_INVAL = -3,          // an invalid argment was passed.
 
-    NQP_OK              // no error
+    NQP_FILE_NOT_FOUND = -4, // no file with the given name was found.
+
+    NQP_OK                   // no error.
 } nqp_error;
 
 /**
@@ -130,30 +118,6 @@ ssize_t nqp_read( int fd, void *buffer, size_t count );
  * directory, or -1 on error.
  */
 ssize_t nqp_getdents( int fd, void *dirp, size_t count );
-
-/**
- * Get information about a specific file.
- *
- * Parameters:
- *  * fd: The file descriptor for the file we want information about. Must be a
- *        nonnegative integer.
- *  * buf: The buffer into which we should write the information. The buffer
- *         must not be NULL.
- * Return: 0 on success, -1 on error.
- */
-int nqp_stat( int fd, nqp_struct_stat *buf );
-
-/**
- * Reposition the read/write file offset.
- *
- * Parameters:
- *  * fd: the file descriptor to change the offset for. Must be a nonnegative
- *        integer.
- *  * offset: the offset (in bytes).
- *  * whence: relative to what should the offset be.
- * Return: the resulting offets into the file, or -1 on error.
- */
-off_t nqp_lseek( int fd, off_t offset, nqp_whence whence );
 
 #ifdef USE_LIBC_INSTEAD
 

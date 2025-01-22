@@ -128,4 +128,4 @@ typedef struct ENTRY_SET
 #define DENTRY_TYPE_WINCE_ACT         0xA2
 #define DENTRY_TYPE_STREAM_EXTENSION  0xC0
 #define DENTRY_TYPE_FILE_NAME         0xC1
-#define ENTRY_TYPE_END                0x00
+#define DENTRY_TYPE_END               0x00
