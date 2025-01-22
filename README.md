@@ -21,7 +21,7 @@ Building and running
 
 Currently the only runnable program in this directory is `cat.c`. While the code
 depends on your implementation of `nqp_io.h`, it's been written in a way that we
-can replace calls to `nqp_*` with their POSIX equivalent (i.e., instead of
+can replace calls to `nqp_*` with their libc equivalent (i.e., instead of
 calling `nqp_read`, we can call `read`).
 
 You can compile and run the code in its current form with `make`:
@@ -30,10 +30,15 @@ You can compile and run the code in its current form with `make`:
 make USE_LIBC_INSTEAD=1
 ```
 
-You can then run the `cat` program on the command line, it takes no arguments:
+You can then run the `cat` program on the command line. It takes two or more
+arguments:
+
+1. The filename of the volume it should read from (when using libc instead this
+   argument is ignored).
+2. The files that it should print to standard output.
 
 ```bash
-./cat
+./cat img README.md
 ```
 
 This should print out the contents of this file (`README.md`) to standard

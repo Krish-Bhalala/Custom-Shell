@@ -2,31 +2,41 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int main(void)
+int main(int argc, char **argv)
 {
-
-    char *fname = "README.md";
+    int fd = 0;
+    ssize_t bytes_read = 0;
     char buffer[256] = {0};
-
-    nqp_error err = nqp_mount("img", NQP_FS_EXFAT);
+    int exit_code = EXIT_SUCCESS;
+    nqp_error err = nqp_mount(argv[1], NQP_FS_EXFAT);
 
     if ( err == NQP_OK )
     {
-        int fd = nqp_open(fname);
-        ssize_t bytes_read;
-
-        while ( ( bytes_read = nqp_read( fd, buffer, 256 ) ) > 0 )
+        for (int i = 2; i < argc; i++)
         {
-            for ( ssize_t i = 0 ; i < bytes_read; i++ )
+            fd = nqp_open(argv[i]);
+
+            if ( fd == NQP_FILE_NOT_FOUND )
             {
-                putchar( buffer[i] );
+                fprintf(stderr, "%s not found\n", argv[i] );
+                exit_code = EXIT_FAILURE;
+            }
+            else
+            {
+                while ( ( bytes_read = nqp_read( fd, buffer, 256 ) ) > 0 )
+                {
+                    for ( ssize_t i = 0 ; i < bytes_read; i++ )
+                    {
+                        putchar( buffer[i] );
+                    }
+                }
+
+                nqp_close( fd );
             }
         }
-
-        nqp_close( fd );
 
         nqp_unmount( );
     }
 
-    return EXIT_SUCCESS;
+    return exit_code;
 }
