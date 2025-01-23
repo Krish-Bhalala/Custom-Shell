@@ -29,6 +29,8 @@ typedef struct NQP_DIRECTORY_ENTRY
 
 typedef enum NQP_ERROR
 {
+    NQP_OK = 0,              // no error.
+
     NQP_UNSUPPORTED_FS = -1, // this file system is not supported by the
                              // implementation.
 
@@ -39,7 +41,6 @@ typedef enum NQP_ERROR
 
     NQP_FILE_NOT_FOUND = -4, // no file with the given name was found.
 
-    NQP_OK                   // no error.
 } nqp_error;
 
 /**
