@@ -15,11 +15,21 @@ endif
 
 .PHONY: clean
 
-all: cat
 
 ifndef USE_LIBC_INSTEAD
+all: cat ls paste
+
 cat: nqp_exfat.o
+
+ls: nqp_exfat.o
+
+paste: nqp_exfat.o
+
+else
+
+all: cat
+
 endif
 
 clean:
-	rm -rf cat *.o
+	rm -rf cat ls paste *.o 
