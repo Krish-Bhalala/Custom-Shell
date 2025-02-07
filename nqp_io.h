@@ -109,14 +109,19 @@ ssize_t nqp_read( int fd, void *buffer, size_t count );
  * Get the directory entries for a directory. Similar to read()ing a file, you
  * may need to call this function repeatedly to get all directory entries.
  *
+ * The name field of struct NQP_DIRECTORY_ENTRY may be dynamically allocated,
+ * the caller is responsible for free()-ing the name after use.
+ *
  * Parameters:
  *  * fd: The file descriptor to read from. Must be a nonnegative integer. The
  *        file descriptor should refer to a directory, not a file.
  *  * dirp: the buffer into which the directory entries will be written. The
  *          buffer must not be NULL.
- *  * count: the size of the buffer. Must be at least sizeof(nqp_dirent).
- * Return: The total number of bytes read into the buffer, 0 at the end of the
- * directory, or -1 on error.
+ *  * count: the number of instances of struct NQP_DIRECTORY_ENTRY to read 
+ *           (e.g., to read NQP_DIRECTORY_ENTRY, you would pass 1). Must be
+ *           greater than zero.
+ * Return: The total number of struct NQP_DIRECTORY_ENTRY read into the buffer,
+ *         0 at the end of the directory, or -1 on error.
  */
 ssize_t nqp_getdents( int fd, void *dirp, size_t count );
 
