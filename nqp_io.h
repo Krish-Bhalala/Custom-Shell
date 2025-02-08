@@ -36,7 +36,7 @@ typedef enum NQP_ERROR
 
     NQP_FSCK_FAIL = -2,      // the file system's super block did not pass the
                              // basic file system check.
-
+ 
     NQP_INVAL = -3,          // an invalid argment was passed.
 
     NQP_FILE_NOT_FOUND = -4, // no file with the given name was found.
