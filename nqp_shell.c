@@ -100,7 +100,7 @@ bool is_valid_path(char* path){
     if(strlen(path) > MAX_LINE_SIZE) return false;
     if('/' != path[0]) return false;
     if(strlen(path) < 1) return false;
-    if('/' != path[strlen(path)-1]) return false;
+    //if('/' != path[strlen(path)-1]) return false;
     return true;
 }
 bool is_valid_curr_dir(Curr_Dir *cwd){
@@ -173,7 +173,6 @@ void command_cd(char* path, Curr_Dir* cwd){
         //if path is NOT starting with a non empty character then change to root dir
         strncpy(cwd->path, "/", MAX_LINE_SIZE);
         //printf("Changed to root directory\n");
-        //test
         return;
     }
     if(!is_valid_string(path)) {
@@ -208,13 +207,10 @@ void command_cd(char* path, Curr_Dir* cwd){
     }else{ //change to another directory
         //create new path
         char new_path[MAX_LINE_SIZE] = {0};
-        strncpy(new_path,curr_path,MAX_LINE_SIZE);  
-        strcat(new_path,path); //append new path to the curr path
-        if(new_path[strlen(new_path)-1] != '/'){ //ensure directory path ends with /
-            strcat(new_path,"/"); //append / indicating a directory
-        }
+        strncpy(new_path,curr_path,MAX_LINE_SIZE);
+        strcat(new_path,path);
         if(!is_valid_path(new_path)) {
-            printf("Error:: Invalid path %s\n", new_path);
+            printf("Error: Invalid path %s\n", new_path);
             return;
         }
 
@@ -238,9 +234,6 @@ void command_cd(char* path, Curr_Dir* cwd){
         }
         
         // Update current working directory, if its a directory entry
-        if(new_path[strlen(new_path)-1] != '/'){ //ensure directory path ends with /
-            strcat(new_path,"/"); //append / indicating a directory
-        }
         assert(is_valid_path(new_path));
         strcpy(curr_path, new_path);
         assert(is_valid_path(curr_path));
@@ -368,8 +361,8 @@ bool execute_command(Command* cmd, Curr_Dir* cwd, char *envp[]){
 //PROCESS RELATED ROUTINES
 bool import_command_data(Command* cmd, const char* curr_path, char *envp[]){
     const char* argv_0 = command_get_arg(cmd,0);
-    char* path = strdup(curr_path);
     char* command = strdup(argv_0);
+    char* path = strdup(curr_path);
     assert(is_valid_path(path));
     assert(is_valid_string(command));
     if(!is_valid_path(path) || !is_valid_string(command)){
