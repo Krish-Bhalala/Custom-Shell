@@ -18,6 +18,8 @@
 #define MAX_ARGS 64
 #define MAX_ARG_LENGTH 256
 #define READ_BUFFER_SIZE 4096  //1024 * 4
+#define COMMAND_NOT_FOUND -404
+#define COMMAND_EXECUTION_FAILED -403
 
 
 //CURRENT DIRECTORY STRUCT
@@ -94,13 +96,25 @@ bool is_only_whitespace(const char *str) {
     }
     return true;
 }
-bool is_valid_path(char* path){
+bool is_valid_path(const char* path){
     if(NULL == path) return false;
     if(strlen(path) < 1) return false;
     if(strlen(path) > MAX_LINE_SIZE) return false;
     if('/' != path[0]) return false;
     if(strlen(path) < 1) return false;
     //if('/' != path[strlen(path)-1]) return false;
+    //making sure if path do not contain consecutive "/"
+    int slash_count = 0;
+    for (int i = 0; path[i] != '\0'; i++) {
+        if (path[i] == '/') {
+            slash_count++;
+            if (slash_count >= 2) {
+                return false;
+            }
+        } else {
+            slash_count = 0;
+        }
+    }
     return true;
 }
 bool is_valid_curr_dir(Curr_Dir *cwd){
@@ -108,8 +122,12 @@ bool is_valid_curr_dir(Curr_Dir *cwd){
     if(!is_valid_path(cwd->path)) return false;
     return true;
 }
-
-
+void print_string_array(char *arr[]) {
+    for (int i = 0; arr[i] != NULL; i++) {
+        printf("%s\n", arr[i]);
+        fflush(stdout);
+    }
+}
 //BUILTINS
 /*
 command_pwd()
@@ -351,7 +369,12 @@ bool execute_command(Command* cmd, Curr_Dir* cwd, char *envp[]){
     }else if(strcmp(command,"pwd") == 0){  //call cd
         command_pwd(cwd);
     }else{
-        import_command_data(cmd,cwd->path, envp);
+        int return_code = -1;
+        if((return_code = import_command_data(cmd,cwd->path, envp)) < 0){
+            if(return_code == COMMAND_EXECUTION_FAILED) fprintf(stderr, "Failure executing command: %s\n", argv_0);
+            else if(return_code == COMMAND_NOT_FOUND) fprintf(stderr, "Command not found in mounted disk: %s\n", argv_0);
+            else fprintf(stderr, "Command execution failed with error code {%d} for command: %s\n", return_code,argv_0);
+        }
     }
 
     free(command);
@@ -359,7 +382,7 @@ bool execute_command(Command* cmd, Curr_Dir* cwd, char *envp[]){
 }
 
 //PROCESS RELATED ROUTINES
-bool import_command_data(Command* cmd, const char* curr_path, char *envp[]){
+int import_command_data(Command* cmd, const char* curr_path, char *envp[]){
     const char* argv_0 = command_get_arg(cmd,0);
     char* command = strdup(argv_0);
     char* path = strdup(curr_path);
@@ -367,24 +390,31 @@ bool import_command_data(Command* cmd, const char* curr_path, char *envp[]){
     assert(is_valid_string(command));
     if(!is_valid_path(path) || !is_valid_string(command)){
         free(command);
-        return false;
+        return COMMAND_NOT_FOUND;
     }
+    
     //search the command data file in current working directory
-    strcat(path,command);
-
-    //free the command string
-    free(command);
+    //first change the command path to start from the root directory
+    if(path[strlen(path)-1] != '/'){
+        strcat(path,"/");       //make sure the working directory path ends with "/"
+    }
+    strcat(path,command);   //concatenate the command to that path
     
     //open the file in nqp file system
     int nqp_fd = nqp_open(path);
-    if(nqp_fd == NQP_FILE_NOT_FOUND) return false;
+    if(nqp_fd == NQP_FILE_NOT_FOUND){
+        free(command);
+        return COMMAND_NOT_FOUND;
+    }
     assert(nqp_fd >= 0);
+    free(path); //path is no longer needed so free it
 
     //write the executable into new memory space
     int mem_fd = memfd_create("FileSystemCode", 0); 
     if(mem_fd == NQP_FILE_NOT_FOUND) {
         nqp_close(nqp_fd);
-        return false;
+        free(command);
+        return COMMAND_NOT_FOUND;
     }
     assert(mem_fd >= 0);
 
@@ -403,17 +433,112 @@ bool import_command_data(Command* cmd, const char* curr_path, char *envp[]){
     //split the process
     pid_t pid = fork();
     if(0 == pid){   //child process
-        // Execute program
-        fexecve(mem_fd, cmd->argv, envp);
-        printf("fexecve FAILED");
-        exit(EXIT_FAILURE);
-    }
-    assert(pid != 0);   //trigger means fexecve failed. Currently in child process
+        //verify arguments
+        char** arguments = cmd->argv;
 
-    // Parent process
-    //int status; //status code for whether waitpid was executed or not
-    wait(NULL);   
-    return true;
+        //TODO: terminate and continue based on the return codes of input_fd
+        //! if its redirection but file not found then terminate the child process do not fexecve
+        //handle the redirection
+        int input_fd = -1;
+        input_fd = handle_input_redirection(cmd,curr_path);
+        if (input_fd > 0) { //if input_fd is different than STDIN_FILENO then redirection is enabled
+            //if redirection is required, change the file descriptor of stdin with input_fd
+            dup2(input_fd, STDIN_FILENO);
+            close(input_fd);
+
+            //update the arguments since redirection is enabled
+            char *minimal_args[] = { command, NULL };
+            arguments = minimal_args;
+        }
+        // Execute program
+        fexecve(mem_fd, arguments, envp);
+        printf("fexecve FAILED\n");
+        exit(EXIT_FAILURE);
+    } else if (pid > 0) {   // Parent process
+        assert(pid != 0);   //trigger means fexecve failed. Currently in child process
+        // Parent process
+        int status;         //status code for whether waitpid was executed or not
+        waitpid(pid, &status, 0);
+        
+        free(command);
+        return status;
+    }
+    
+    //free the command string
+    free(command);
+    return COMMAND_EXECUTION_FAILED;
+}
+
+//TODO: Implement Redirection error return codes
+int handle_input_redirection(const Command* cmd, const char* cwd_path){
+    assert(command_is_valid(cmd));
+    assert(cwd_path != NULL);
+    assert(is_valid_path(cwd_path));
+    if(NULL == cmd || NULL == cwd_path) return -1;
+    if(!command_is_valid(cmd) || !is_valid_path(cwd_path)) return -1;
+
+    if(cmd->argc < 3){
+        printf("Not enough arguments for redirection, Minimum 3 arguments required");
+        return NQP_FILE_NOT_FOUND;
+    }
+
+    //loop through the command arguments
+    for(int i=0; i<cmd->argc; i++){
+        //search for "<" in the arguments
+        if(strcmp(command_get_arg(cmd,i),"<") == 0 && i+1 < cmd->argc){
+            //open the input file
+            const char* arg_i_plus_one = command_get_arg(cmd,i+1);
+            assert(arg_i_plus_one != NULL);
+            char* filename = strdup(arg_i_plus_one);    //stores the filename for creating filepath
+            assert(NULL != filename);
+            char* filepath = strdup(cwd_path);          //stores the absolute path in nqp file system
+            assert(NULL != filepath);
+            if(NULL == filename || NULL == filepath){
+                printf("ERROR: error in finding file from the arguments of the command ");
+                command_print(cmd);
+                free(filename);
+                free(filepath);
+                return -1;
+            }
+            //create the absolute path of the filename for the nqp file system
+            if(filepath[strlen(filepath)-1] != '/'){
+                strcat(filepath,"/");   //make sure cwd_path ends with "/"
+            }
+            strcat(filepath,filename);  //making filepath absolute
+            assert(is_valid_path(filepath));
+
+            //open that file in nqp file system
+            int input_fd = nqp_open(filepath);
+            if(input_fd < 0){
+                printf("Redirection Error: nqp_open input file {%s} not found\n", command_get_arg(cmd,i+1));
+                return NQP_FILE_NOT_FOUND;
+            }
+            assert(input_fd >= 0);
+
+            //create a memory file to store the input file
+            int mem_fd = memfd_create(filepath, 0);
+            if (mem_fd < 0) {
+                printf("ERROR: memfd_create can't create input_redirect");
+                nqp_close(input_fd);    //free resources
+                return -1;
+            }
+            assert(mem_fd >= 0);
+
+            //read the input file and write it in the memory file
+            char buffer[READ_BUFFER_SIZE] = {0};
+            ssize_t bytes_read = 0;
+            while ((bytes_read = nqp_read(input_fd, buffer, sizeof(buffer))) > 0) {
+                write(mem_fd, &buffer, bytes_read);     //write it in the memory file
+                memset(buffer, 0, READ_BUFFER_SIZE);    //reset the buffer
+            }
+            nqp_close(input_fd);            //close the input file in the nqp file system
+            lseek(mem_fd, 0, SEEK_SET);     //reset read offset of the memory input file
+
+            return mem_fd;  //return the fd of memory input file
+        }
+    }
+    //if there is no redirection needed, then return the standard input file num
+    return STDIN_FILENO;    
 }
 
 
