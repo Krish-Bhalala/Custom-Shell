@@ -7,22 +7,41 @@
 typedef struct{
     char path[MAX_LINE_SIZE];
 } Curr_Dir;
+Curr_Dir* construct_empty_curr_dir(void);
+Curr_Dir* construct_curr_dir(const char* path);
+void destroy_curr_dir(Curr_Dir* cwd);
+void set_path(Curr_Dir* cwd,const char* path);
 
 // COMMAND OBJECT
 typedef struct {
     int argc;
     char** argv;
 } Command;
-void remove_redirection_marker(Command* cmd);
+//constructor
+Command* command_create(const char* input);
+//destructor
+void command_destroy(Command* cmd);
+//validator
+bool command_is_valid(const Command* cmd);
+//getter
+const char* command_get_arg(const Command* cmd, int index);
+//for debugging command object
+void command_print(const Command* cmd);
+//instance methods
+bool execute_command(const Command* cmd, Curr_Dir* cwd, char *envp[]);
 
-Curr_Dir* construct_empty_curr_dir(void);
-Curr_Dir* construct_curr_dir(const char* path);
-void destroy_curr_dir(Curr_Dir* cwd);
-void set_path(Curr_Dir* cwd,const char* path);
+//PIPE OBJECT
+typedef struct{
+    int a;
+}Pipes;
 
 //PROCESS RELATED ROUTINES
 int import_command_data(const Command* cmd, const char* path, char *envp[]);
 int handle_input_redirection(const Command* cmd, const char* cwd_path);
+
+//PIPES RELATED ROUTINES
+int calc_num_pipes_marker(const Command* cmd);
+bool validate_pipe_positions(const Command* cmd);
 
 //validators
 bool is_valid_string(const char* str);
