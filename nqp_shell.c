@@ -46,7 +46,7 @@ Curr_Dir* construct_empty_curr_dir(void){
     //return it
     return cwd;
 }
-Curr_Dir* construct_curr_dir(char* path){
+Curr_Dir* construct_curr_dir(const char* path){
     //input validation
     assert(is_valid_path(path));
     if(!is_valid_path(path)) return NULL;
@@ -70,7 +70,7 @@ void destroy_curr_dir(Curr_Dir* cwd){
     if(NULL == cwd) return;
     free(cwd);
 }
-void set_path(Curr_Dir* cwd, char* path){
+void set_path(Curr_Dir* cwd,const char* path){
     assert(NULL != cwd);
     assert(NULL != path);
     assert(is_valid_path(path));
@@ -81,7 +81,7 @@ void set_path(Curr_Dir* cwd, char* path){
 }
 
 //VALIDATORS
-bool is_valid_string(char* str){
+bool is_valid_string(const char* str){
     if(NULL == str) return false;
     if(strlen(str) < 1) return false;
     if(strlen(str) > MAX_LINE_SIZE) return false;
@@ -117,12 +117,12 @@ bool is_valid_path(const char* path){
     }
     return true;
 }
-bool is_valid_curr_dir(Curr_Dir *cwd){
+bool is_valid_curr_dir(const Curr_Dir *cwd){
     if(NULL == cwd) return false;
     if(!is_valid_path(cwd->path)) return false;
     return true;
 }
-void print_string_array(char *arr[]) {
+void print_string_array(const char *arr[]) {
     for (int i = 0; arr[i] != NULL; i++) {
         printf("%s\n", arr[i]);
         fflush(stdout);
@@ -132,7 +132,7 @@ void print_string_array(char *arr[]) {
 /*
 command_pwd()
 */
-void command_pwd(Curr_Dir *cwd) {
+void command_pwd(const Curr_Dir *cwd) {
     assert(is_valid_curr_dir(cwd));
     if(!is_valid_curr_dir(cwd)) return;
     printf("%s\n", cwd->path);
@@ -141,7 +141,7 @@ void command_pwd(Curr_Dir *cwd) {
 /*
 command_ls()
 */
-void command_ls(Curr_Dir* cwd){
+void command_ls(const Curr_Dir* cwd){
     assert(NULL != cwd);
     assert(is_valid_curr_dir(cwd));
     if(!is_valid_curr_dir(cwd)) return;
@@ -149,12 +149,20 @@ void command_ls(Curr_Dir* cwd){
     nqp_dirent entry = {0};
     int fd = -1;
     ssize_t dirents_read;
-    char* curr_path = cwd->path;
+
+    //copying the parameters
+    char* curr_path = strdup(cwd->path);
+    assert(is_valid_path(curr_path));
+    if(!is_valid_path(curr_path)){
+        printf("ls: corrupted working directory path- %s != %s", curr_path, cwd->path);
+        return;
+    }
 
     //open the file
     fd = nqp_open(curr_path);
     if ( fd == NQP_FILE_NOT_FOUND ){
         fprintf(stderr, "%s not found\n", curr_path );
+        free(curr_path);
         return; //file open failed
     }
 
@@ -172,6 +180,7 @@ void command_ls(Curr_Dir* cwd){
         fprintf( stderr, "%s is not a directory\n", curr_path );
     }
     nqp_close( fd );
+    free(curr_path);
 }
 
 /*
@@ -180,7 +189,7 @@ void command_ls(Curr_Dir* cwd){
  * "/" OR "/<anything>" Takes to root dir
  * "<folder>" takes to that folder in the current directory
  */
-void command_cd(char* path, Curr_Dir* cwd){
+void command_cd(const char* path, Curr_Dir* cwd){
     //Input validation
     assert(is_valid_string(path));
     if(!is_valid_string(path)) {
@@ -198,7 +207,9 @@ void command_cd(char* path, Curr_Dir* cwd){
         return;
     }
 
+    //copying the parameters
     char* curr_path = cwd->path;
+
 
     //check for ".." request
     if(strncmp(path,"..",2) == 0){
@@ -222,6 +233,7 @@ void command_cd(char* path, Curr_Dir* cwd){
     }else if(strcmp(path,"/") == 0){
         assert(strlen(path) == 1);
         //printf("Changed to root directory\n");
+        strncpy(cwd->path,"/",MAX_LINE_SIZE);
     }else{ //change to another directory
         //create new path
         char new_path[MAX_LINE_SIZE] = {0};
@@ -340,7 +352,7 @@ void command_print(const Command* cmd) {
     printf("]\n");
 }
 
-bool execute_command(Command* cmd, Curr_Dir* cwd, char *envp[]){
+bool execute_command(const Command* cmd, Curr_Dir* cwd, char *envp[]){
     assert(NULL != cmd);
     assert(cmd->argc >= 0);
     if(!cmd || cmd->argc < 0) return false;
@@ -382,7 +394,7 @@ bool execute_command(Command* cmd, Curr_Dir* cwd, char *envp[]){
 }
 
 //PROCESS RELATED ROUTINES
-int import_command_data(Command* cmd, const char* curr_path, char *envp[]){
+int import_command_data(const Command* cmd, const char* curr_path, char *envp[]){
     const char* argv_0 = command_get_arg(cmd,0);
     char* command = strdup(argv_0);
     char* path = strdup(curr_path);
