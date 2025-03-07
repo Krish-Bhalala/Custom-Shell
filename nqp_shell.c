@@ -20,6 +20,8 @@
 #define READ_BUFFER_SIZE 4096  //1024 * 4
 #define COMMAND_NOT_FOUND -404
 #define COMMAND_EXECUTION_FAILED -403
+#define INVALID_ARGUMENTS -300
+#define REDIRECTION_FAILED -400
 
 
 //CURRENT DIRECTORY STRUCT
@@ -462,6 +464,13 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
             char *minimal_args[] = { command, NULL };
             arguments = minimal_args;
         }
+        if(REDIRECTION_FAILED == input_fd){ //there was a redirection operator and it failed
+            printf("Redirection Failed pls try again\n");   //terminate the process 
+            exit(EXIT_FAILURE);
+        }       
+        if(INVALID_ARGUMENTS == input_fd){
+            printf("Invalid Arguments passed to redirection command");
+        }
         // Execute program
         fexecve(mem_fd, arguments, envp);
         printf("fexecve FAILED\n");
@@ -475,9 +484,7 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
         free(command);
         return status;
     }
-    
-    //free the command string
-    free(command);
+
     return COMMAND_EXECUTION_FAILED;
 }
 
@@ -486,18 +493,23 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
     assert(command_is_valid(cmd));
     assert(cwd_path != NULL);
     assert(is_valid_path(cwd_path));
-    if(NULL == cmd || NULL == cwd_path) return -1;
-    if(!command_is_valid(cmd) || !is_valid_path(cwd_path)) return -1;
-
-    if(cmd->argc < 3){
-        printf("Not enough arguments for redirection, Minimum 3 arguments required");
-        return NQP_FILE_NOT_FOUND;
-    }
+    if(NULL == cmd || NULL == cwd_path) return INVALID_ARGUMENTS;
+    if(!command_is_valid(cmd) || !is_valid_path(cwd_path)) return INVALID_ARGUMENTS;
 
     //loop through the command arguments
     for(int i=0; i<cmd->argc; i++){
         //search for "<" in the arguments
-        if(strcmp(command_get_arg(cmd,i),"<") == 0 && i+1 < cmd->argc){
+        if(strcmp(command_get_arg(cmd,i),"<") == 0){ //detected redirection operator
+            //check if redirection is possible or not, if the command contains "<" operator
+            if(cmd->argc < 3){
+                printf("ERROR: Not enough arguments for redirection, Minimum 3 arguments required\n");
+                return REDIRECTION_FAILED;
+            }
+            if(i+1 >= cmd->argc){    //making sure the redirection operator isn't the last argument
+                printf("ERROR: Last argument should be a filename not the redirection operator\n");
+                return REDIRECTION_FAILED;
+            }
+
             //open the input file
             const char* arg_i_plus_one = command_get_arg(cmd,i+1);
             assert(arg_i_plus_one != NULL);
@@ -510,7 +522,7 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
                 command_print(cmd);
                 free(filename);
                 free(filepath);
-                return -1;
+                return REDIRECTION_FAILED;
             }
             //create the absolute path of the filename for the nqp file system
             if(filepath[strlen(filepath)-1] != '/'){
@@ -523,7 +535,7 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
             int input_fd = nqp_open(filepath);
             if(input_fd < 0){
                 printf("Redirection Error: nqp_open input file {%s} not found\n", command_get_arg(cmd,i+1));
-                return NQP_FILE_NOT_FOUND;
+                return REDIRECTION_FAILED;
             }
             assert(input_fd >= 0);
 
@@ -532,7 +544,7 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
             if (mem_fd < 0) {
                 printf("ERROR: memfd_create can't create input_redirect");
                 nqp_close(input_fd);    //free resources
-                return -1;
+                return REDIRECTION_FAILED;
             }
             assert(mem_fd >= 0);
 
