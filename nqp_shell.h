@@ -30,12 +30,18 @@ void command_print(const Command* cmd);
 //instance methods
 bool execute_command(const Command* cmd, Curr_Dir* cwd, char *envp[]);
 
-//PIPE OBJECT
 typedef struct{
-    int a;
-}Pipes;
+    int num_commands;   //total number of commands in the pipe
+    Command** commands; //array of commands
+}Pipe_Commands;
+Pipe_Commands* create_Pipe_Commands(const int num_pipes, char* line);
+void pipe_commands_destroy(Pipe_Commands* pipe);
+bool pipe_commands_is_valid(const Pipe_Commands* pc);
+int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], const int output_fd);
+Command* pipe_commands_get_command_at(const Pipe_Commands* cmd_list, const int idx);
 
 //PROCESS RELATED ROUTINES
+int import_command_to_memfd(const char* path);
 int import_command_data(const Command* cmd, const char* path, char *envp[]);
 int handle_input_redirection(const Command* cmd, const char* cwd_path);
 
@@ -49,6 +55,9 @@ bool is_only_whitespace(const char *str);
 bool is_valid_path(const char* path);
 bool is_valid_curr_dir(const Curr_Dir *cwd);
 void print_string_array(const char *arr[]);
+
+//HELPERS
+void trim_string(char *str);
 
 //builtins
 void command_cd(const char* path, Curr_Dir* cwd);
