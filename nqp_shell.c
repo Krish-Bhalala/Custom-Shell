@@ -3,7 +3,11 @@
 #include <unistd.h>    // For read, write, fork, lseek
 #include <sys/wait.h>  // For waitpid
 
+//for the bonus part: navigating the history
 #include <stdio.h>
+#include <readline/readline.h>
+#include <readline/history.h>
+
 #include <stdlib.h>
 
 #include "nqp_io.h"
@@ -136,8 +140,12 @@ bool is_valid_curr_dir(const Curr_Dir *cwd){
 void print_string_array(const char *arr[]) {
     for (int i = 0; arr[i] != NULL; i++) {
         printf("%s\n", arr[i]);
+        if(NULL == arr[i+1]){
+            printf("NULL\n");
+        }
         fflush(stdout);
     }
+    
 }
 
 //HELPERS
@@ -424,7 +432,7 @@ bool execute_command(const Command* cmd, Curr_Dir* cwd, char *envp[]){
         int return_code = -1;
         if((return_code = import_command_data(cmd,cwd->path, envp)) < 0){
             if(return_code == COMMAND_EXECUTION_FAILED) fprintf(stderr, "Failure executing command: %s\n", argv_0);
-            else if(return_code == COMMAND_NOT_FOUND) fprintf(stderr, "Command not found in mounted disk: %s\n", argv_0);
+            else if(return_code == COMMAND_NOT_FOUND) fprintf(stderr, "execute_command:Command not found in mounted disk: %s\n", argv_0);
             else fprintf(stderr, "Command execution failed with error code {%d} for command: %s\n", return_code,argv_0);
         }
     }
@@ -475,12 +483,12 @@ char** create_arguments_for_redirection(const Command* cmd){
 
 //PROCESS RELATED ROUTINES
 int import_command_to_memfd(const char* path) {
-    assert(path != NULL);   //! fix invalid cmd_path
+    assert(path != NULL); 
     if(!is_valid_path(path)){
         printf("INVALID PATH: {%s}\n",path);
         return COMMAND_NOT_FOUND;
     }
-    assert(is_valid_path(path));
+    assert(is_valid_path(path));    //! path is invalid
     if (!path) {
         printf("INVALID file path to search in mounted filesystem\n");
         return COMMAND_NOT_FOUND;
@@ -489,7 +497,7 @@ int import_command_to_memfd(const char* path) {
     // Open the file in the nqp filesystem
     int nqp_fd = nqp_open(path);
     if (nqp_fd == NQP_FILE_NOT_FOUND) {
-        printf("Command Not Found in mounted filesystem {%s}\n", path);
+        printf("import_command_to_memfd:Command Not Found in mounted filesystem {%s}\n", path);
         return COMMAND_NOT_FOUND;
     }
     
@@ -501,6 +509,7 @@ int import_command_to_memfd(const char* path) {
     }
     
     // Read the command file from NQP filesystem and write to memory file
+    lseek(mem_fd, 0, SEEK_SET);
     char buffer[READ_BUFFER_SIZE] = {0};
     ssize_t bytes_read;
     while ((bytes_read = nqp_read(nqp_fd, buffer, READ_BUFFER_SIZE)) > 0) {
@@ -673,11 +682,12 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
             nqp_close(input_fd);            //close the input file in the nqp file system
             lseek(mem_fd, 0, SEEK_SET);     //reset read offset of the memory input file
 
+            printf("handle_input_redirection: memfd = {%d}\n", mem_fd);
             return mem_fd;  //return the fd of memory input file
         }
     }
     //if there is no redirection needed, then return the standard input file num
-    return STDIN_FILENO;    
+    return STDIN_FILENO;
 }
 
 
@@ -687,6 +697,28 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
 //     int num_commands;   //total number of commands in the pipe
 //     Command** commands; //array of commands
 // }Pipe_Commands;
+void print_pipe_commands(const Pipe_Commands* pipe_cmds) {
+    if (pipe_cmds == NULL) {
+        printf("Pipe_Commands is NULL\n");
+        return;
+    }
+
+    printf("Number of commands in pipe: %d\n", pipe_cmds->num_commands);
+    
+    for (int i = 0; i < pipe_cmds->num_commands; i++) {
+        printf("Command %d:\n", i + 1);
+        if (pipe_cmds->commands[i] != NULL) {
+            command_print(pipe_cmds->commands[i]);  // Assuming this function exists
+        } else {
+            printf("  (NULL command)\n");
+        }
+        
+        // Print a separator between commands, except for the last one
+        if (i < pipe_cmds->num_commands - 1) {
+            printf("  |\n");  // Pipe symbol to visually separate commands
+        }
+    }
+}
 Pipe_Commands* create_Pipe_Commands(const int num_pipes, char* line){
     assert(num_pipes > 0);
     assert(is_valid_string(line));
@@ -719,10 +751,14 @@ Pipe_Commands* create_Pipe_Commands(const int num_pipes, char* line){
     assert(pipe_commands_obj->num_commands == num_pipes+1);
 
     // Split the line by pipe operators and create a command object for each sub string
-    char *token = strtok(line, " | ");
+    //char *token = strtok(line, "|");
+    char* token = NULL;
     char cmd_str[MAX_LINE_SIZE];
     int i = 0;
-    while (token != NULL && i < num_pipes+1) {
+    int count = 0;
+    //printf("TOKEN: {%s}\n",token);
+    while ((token = strsep(&line, "|")) != NULL && i < num_pipes+1) {
+        count++;
         assert(num_pipes+1 > i);
 
         //create a copy of command for creating the command
@@ -731,6 +767,7 @@ Pipe_Commands* create_Pipe_Commands(const int num_pipes, char* line){
 
         trim_string(cmd_str);
         assert(is_valid_string(cmd_str));
+        //printf("TOKEN: {%s}\n",cmd_str);
 
         // Create a Command object with the token
         cmd_array[i] = command_create(cmd_str);
@@ -748,9 +785,9 @@ Pipe_Commands* create_Pipe_Commands(const int num_pipes, char* line){
         }
 
         i++;
-        token = strtok(NULL, "|");
     }
 
+    assert(count == pipe_commands_obj->num_commands);
     return pipe_commands_obj;    //! change to pipe commands object
 }
 void pipe_commands_destroy(Pipe_Commands* pipe) {
@@ -795,6 +832,7 @@ Command* pipe_commands_get_command_at(const Pipe_Commands* cmd_list, const int i
     if (!cmd_list || index < 0 || index >= cmd_list->num_commands) return NULL;
     return cmd_list->commands[index];
 }
+/*
 int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], const int output_fd){
     assert(pipe_commands_is_valid(cmd_list));
     assert(is_valid_curr_dir(cwd));
@@ -828,15 +866,19 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
     // Set up the pipes and
     // Execute each command in the pipeline
     for (int i = 0; i < cmd_list->num_commands; i++) {
+        //create the command from the cmd_list
         Command* cmd = pipe_commands_get_command_at(cmd_list,i);
+        printf("CHILD: execute_pipe: command {%d} {%s}\n",i,cmd->argv[0]);
+        fflush(stdout);
         if (!cmd){
             printf("execute_pipe::ERROR in processing pipe command at position %d\n",i);
             continue;
         }
+        //store the command name
         const char* cmd_name = command_get_arg(cmd, 0);
         if (!cmd_name) continue;
         
-        // fork a process for this cmd
+        // fork a process for running ith cmd
         pid_t pid = fork();
         
         if (pid < 0) { // Fork failed
@@ -852,9 +894,9 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
                 waitpid(child_pids[j], NULL, 0);    //confirm that the child terminated
             }
             return OPERATION_FAILED;
-        } else if (pid == 0) { // Child process
+        } else if (pid == 0) { // Child process: running that command
             // Set up input redirection for the first command if present any
-            if (i == 0) {
+            if (i == 0) {   // the first command for redirection
                 int input_fd = handle_input_redirection(cmd, cwd->path);
                 if (input_fd == REDIRECTION_FAILED || input_fd == INVALID_ARGUMENTS) {
                     exit(EXIT_FAILURE); //kill the process
@@ -867,10 +909,17 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
             }
             
             // Set up output redirection for all but the last command
+            printf("LINE 906: i={%d} cmd_list->num_commands-1={%d}\n",i,cmd_list->num_commands - 1);
+                command_print(cmd_list->commands[i]);
+                fflush(stdout);
             if (i < cmd_list->num_commands - 1) {
                 dup2(pipes[i][PIPE_WRITE_END], STDOUT_FILENO);
-            } else if (output_fd >= 0) { //this is the last command and logging is enabled
-
+                printf("LINE 907: i = {%d}, pipid{%d}==stdoutfileno{%d}\n",i,pipes[i][PIPE_WRITE_END],STDOUT_FILENO);
+                fflush(stdout);
+            } else if (i == cmd_list->num_commands - 1 && output_fd > 1) { //this is the last command and logging is enabled
+                printf("LINE 911: i==last command {%d}\n",i);
+                command_print(cmd_list->commands[i]);
+                fflush(stdout);
                 // set up a pipe back to the parent for logging
                 int log_pipe[2];
                 if (pipe(log_pipe) < 0) {
@@ -895,21 +944,32 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
                     }
                     
                     //Create the absolute path for executing the last command
-                    char cmd_path[MAX_LINE_SIZE];
-                    snprintf(cmd_path, MAX_LINE_SIZE, "%s/%s", cwd->path, cmd_name);
+                    char cmd_path[MAX_LINE_SIZE] = {0};
+                    if(cwd->path[strlen(cwd->path) - 1] != '/'){
+                        snprintf(cmd_path, MAX_LINE_SIZE, "%s/%s", cwd->path, cmd_name);
+                    }else{
+                        snprintf(cmd_path, MAX_LINE_SIZE, "%s%s", cwd->path, cmd_name);
+                    }
                     
                     // Create a mem_fd file with the nqp fs file data
-                    if(!is_valid_path(cmd_path)){
-                        fflush(stdout);
-                        printf("903: INVALID PATH: {%s}\n",cmd_path);   //! fix invalid cmd_path
-                        fflush(stdout);
-                    }
+                    // if(!is_valid_path(cmd_path)){
+                    //     fflush(stdout);
+                    //     printf("903: INVALID PATH: {%s}\n",cmd_path);   //! fix invalid cmd_path
+                    //     fflush(stdout);
+                    // }
                     int mem_fd = import_command_to_memfd(cmd_path);
                     if (mem_fd < 0) {
-                        fprintf(stderr, "Command not found in the mouted file system: %s\n", cmd_name);
+                        fprintf(stderr, "Command not found in the mouted file system: {%s} error code: {%d} path: {%s}\n", cmd_name, mem_fd, cmd_path);
                         exit(EXIT_FAILURE);
                     }
                     
+                    for (int i = 0; cmd->argv[i] != NULL; i++) {
+                        printf("%s\n", cmd->argv[i]);
+                        if(NULL == cmd->argv[i+1]){
+                            printf("NULL\n");
+                        }
+                        fflush(stdout);
+                    }
                     // Execute the command
                     fexecve(mem_fd, cmd->argv, envp);
                     perror("fexecve failed");
@@ -942,23 +1002,37 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
             
             // Execute the command
             // Create the absolute file path of the command's files to read from the nqp fs
-            char cmd_path[MAX_LINE_SIZE];
-            snprintf(cmd_path, MAX_LINE_SIZE, "%s/%s", cwd->path, cmd_name);
+            char cmd_path[MAX_LINE_SIZE] = {0};
+            if(cwd->path[strlen(cwd->path) - 1] != '/'){
+                snprintf(cmd_path, MAX_LINE_SIZE, "%s/%s", cwd->path, cmd_name);
+            }else{
+                snprintf(cmd_path, MAX_LINE_SIZE, "%s%s", cwd->path, cmd_name);
+            }
             
             // Read the command file's data from nqp fs and write it into the local memory file
-            if(!is_valid_path(cmd_path)){
-                fflush(stdout);
-                printf("949: INVALID PATH: {%s}\n",cmd_path);   //! fix invalid cmd_path
-                fflush(stdout);
-            } 
-            int mem_fd = import_command_to_memfd(cmd_path);
+            int mem_fd = -1;
+            mem_fd = import_command_to_memfd(cmd_path);
             if (mem_fd < 0) {
-                fprintf(stderr, "Command not found: %s\n", cmd_name);
+                fprintf(stderr, "Pipes: Command not found: {%s} err code: {%d} path: {%s}\n ", cmd_name, mem_fd, cmd_path);
+                exit(EXIT_FAILURE);
+            }
+            if (lseek(mem_fd, 0, SEEK_SET) == -1) { //reset the memfd
+                perror("memfd lseek failed");
                 exit(EXIT_FAILURE);
             }
             
             // Execute the command
+            printf("PIPE: memfd {%d}\n", mem_fd);
+            for (int i = 0; cmd->argv[i] != NULL; i++) {
+                printf("%s\n", cmd->argv[i]);
+                if(NULL == cmd->argv[i+1]){
+                    printf("NULL\n");
+                }
+                fflush(stdout);
+            }
+            //char* nullenvp[] = {0};
             fexecve(mem_fd, cmd->argv, envp);
+            close(mem_fd);
             perror("fexecve failed");
             exit(EXIT_FAILURE);
         } else { // Parent process
@@ -979,8 +1053,126 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
     
     return OPERATION_SUCCEED;
 }
+*/
+int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], const int output_fd) {
+    printf("%d\n",output_fd);
+    if (NULL == cmd_list || NULL == cwd || !is_valid_curr_dir(cwd)) {
+        printf("execute_pipes: NULL commmands arguments\n");
+        return INVALID_ARGUMENTS;
+    }
 
+    int num_commands = cmd_list->num_commands;
+    if (num_commands <= 1) {
+        printf("execute_pipes: INSUFFICIENT number of commands to support pipe\n");
+        return INVALID_ARGUMENTS;
+    }
 
+    // Create pipes between commands
+    int pipes[num_commands - 1][2];
+    for (int i = 0; i < num_commands - 1; i++) {
+        if (pipe(pipes[i]) == -1) {
+            perror("execute_pipes:pipe creation failed");
+            // Clean up any pipes already created
+            for (int j = 0; j < i; j++) {
+                close(pipes[j][PIPE_READ_END]);
+                close(pipes[j][PIPE_WRITE_END]);
+            }
+            return OPERATION_FAILED;
+        }
+    }
+
+    // Array to store child process IDs
+    pid_t child_pids[num_commands];
+
+    for (int i = 0; i < num_commands; i++) {
+        Command* cmd = pipe_commands_get_command_at(cmd_list, i);
+        if (!cmd) {
+            printf("execute_pipe::ERROR in processing pipe command at position %d\n", i);
+            continue;
+        }
+
+        const char* cmd_name = command_get_arg(cmd, 0);
+        if (!cmd_name) continue;
+
+        // Fork child process
+        pid_t pid = fork();
+        if (pid < 0) {  //fork failed
+            perror("fork failed");
+            // Clean up pipes and processes
+            for (int j = 0; j < num_commands - 1; j++) {
+                close(pipes[j][PIPE_READ_END]);
+                close(pipes[j][PIPE_WRITE_END]);
+            }
+            for (int j = 0; j < i; j++) {
+                kill(child_pids[j], SIGTERM);
+                waitpid(child_pids[j], NULL, 0);
+            }
+            return OPERATION_FAILED;
+        }
+
+        if (pid == 0) {// Child process
+            // Handle input redirection
+            if (i > 0) {
+                dup2(pipes[i-1][PIPE_READ_END], STDIN_FILENO);
+            } else {
+                int input_fd = handle_input_redirection(cmd, cwd->path);
+                if (input_fd != REDIRECTION_FAILED && input_fd != INVALID_ARGUMENTS) {
+                    if (input_fd != STDIN_FILENO) {
+                        dup2(input_fd, STDIN_FILENO);
+                        close(input_fd);
+                    }
+                }
+            }
+
+            // Handle output redirection
+            if (i < num_commands - 1) {
+                dup2(pipes[i][PIPE_WRITE_END], STDOUT_FILENO);
+            }
+
+            // Close unused pipe ends
+            for (int j = 0; j < num_commands - 1; j++) {
+                if (j != i && j != i-1) {
+                    close(pipes[j][PIPE_READ_END]);
+                    close(pipes[j][PIPE_WRITE_END]);
+                }
+            }
+
+            // Execute command
+            char cmd_path[MAX_LINE_SIZE] = {0};
+            if(cwd->path[strlen(cwd->path) - 1] != '/'){
+                snprintf(cmd_path, MAX_LINE_SIZE, "%s/%s", cwd->path, cmd_name);
+            }else{
+                snprintf(cmd_path, MAX_LINE_SIZE, "%s%s", cwd->path, cmd_name);
+            }
+
+            int mem_fd = import_command_to_memfd(cmd_path);
+            if (mem_fd < 0) {
+                fprintf(stderr, "execute_pipes: Command not found: %s\n", cmd_name);
+                exit(EXIT_FAILURE);
+            }
+
+            fexecve(mem_fd, cmd->argv, envp);
+            perror("fexecve failed");
+            exit(EXIT_FAILURE);
+        } else {
+            // Parent process
+            child_pids[i] = pid;
+        }
+    }
+
+    // Parent process: Close all pipes
+    for (int i = 0; i < num_commands - 1; i++) {
+        close(pipes[i][PIPE_READ_END]);
+        close(pipes[i][PIPE_WRITE_END]);
+    }
+
+    // Wait for all children
+    for (int i = 0; i < num_commands; i++) {
+        waitpid(child_pids[i], NULL, 0);
+    }
+
+    return OPERATION_SUCCEED;
+}
 
 //PIPES RELATED ROUTINES
 int calc_num_pipes_marker(const Command* cmd) {
@@ -1043,14 +1235,13 @@ bool validate_pipe_positions(const Command* cmd) {
 }
 
 
+
 //MAIN FUNCTION
 int main( int argc, char *argv[], char *envp[] ){
-    printf("%d, %s, %s", argc, argv[0], envp[0]);
     char line_buffer[MAX_LINE_SIZE] = {0};
+
     char *volume_label = NULL;
     nqp_error mount_error;
-
-    (void) envp;
 
     if ( argc != 2 ){
         fprintf( stderr, "Usage: ./nqp_shell volume.img\n" );
@@ -1076,9 +1267,19 @@ int main( int argc, char *argv[], char *envp[] ){
 
     //Initialise curr_dir with root directory
     Curr_Dir* cwd = construct_empty_curr_dir();
-    while ( fgets( line_buffer, MAX_LINE_SIZE, stdin ) != NULL ){
-        printf( "%s:\\> ", volume_label );
-        fflush(stdout);
+    while (true){
+        char mssg[MAX_LINE_SIZE] = {0};
+        snprintf(mssg, MAX_LINE_SIZE, "%s:\\> ",volume_label);
+        char* line = readline(mssg);
+        strncpy(line_buffer, line, MAX_LINE_SIZE);
+
+        if (line == NULL) { // EOF (Ctrl+D pressed)
+            printf("\n");
+            break;
+        }
+
+        //BONUS PART: Adding the current command to history
+        add_history(line_buffer);
 
         //Parse the command
         Command* new_command = command_create(line_buffer);
