@@ -569,6 +569,7 @@ int import_command_to_memfd(const char* path) {
     return mem_fd;  // Return the memory file descriptor
 }
 int import_command_data(const Command* cmd, const char* curr_path, char *envp[]){
+    //input params validation and copying
     const char* argv_0 = command_get_arg(cmd,0);
     char* command = strdup(argv_0);
     char* path = strdup(curr_path);
@@ -595,7 +596,7 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
     assert(nqp_fd >= 0);
     free(path); //path is no longer needed so free it
 
-    //write the executable into new memory space
+    //creat a new file in local memory
     int mem_fd = memfd_create("FileSystemCode", 0); 
     if(mem_fd == NQP_FILE_NOT_FOUND) {
         nqp_close(nqp_fd);
@@ -604,7 +605,7 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
     }
     assert(mem_fd >= 0);
 
-    //read the file's data from the nqp file system and write in the mem_fd file
+    //read the file's data from the nqp file system and write in the local memory file (i.e. mem_fd file)
     char buffer[READ_BUFFER_SIZE] = {0};
     int bytes_read = 0;
     while( (bytes_read = nqp_read(nqp_fd, &buffer, READ_BUFFER_SIZE)) > 0){
@@ -618,17 +619,16 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
 
     //handle the output redirection through a pipe if logging is enable
     int pipefd[2] = {-1, -1};
-    if (log_fd != LOG_DISABLED) {
-        // Create pipe for capturing command output
-        if (pipe(pipefd) < 0) {
-            perror("pipe");
+    if (log_fd != LOG_DISABLED) {   // Create pipe for printing command output
+        if (pipe(pipefd) < 0) {     // populate the pipe's fd
+            perror("pipe");         // piping failed, do cleanup
             free(command);
             nqp_close(nqp_fd);
             return COMMAND_EXECUTION_FAILED;
         }
     }
 
-    //split the process for execign the command
+    //fork the process for exec-ing the command
     pid_t pid = fork();
     if(0 == pid){   //child process
         //verify arguments
@@ -636,44 +636,44 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
 
         //handle the input redirection
         int input_fd = -1;
-        input_fd = handle_input_redirection(cmd,curr_path);
+        input_fd = handle_input_redirection(cmd,curr_path);     //copy the mounted fs's file into local memory and open it
         if (input_fd > 0) { //if input_fd is different than STDIN_FILENO then redirection is enabled
             //if redirection is required, change the file descriptor of stdin with input_fd
             dup2(input_fd, STDIN_FILENO);
             close(input_fd);
 
-            //update the arguments since redirection is enabled
-            char **minimal_args = create_arguments_for_redirection(cmd);    //! FREE THIS AFTER USE
+            //remove the arguments after "<" since redirection is enabled and we already piped it with our process's stdin
+            char **minimal_args = create_arguments_for_redirection(cmd);    
             arguments = minimal_args;
             assert(minimal_args != NULL);
         }
-        if(REDIRECTION_FAILED == input_fd){ //there was a redirection operator and it failed
+        if(REDIRECTION_FAILED == input_fd){ //there was a redirection operator in args and it failed
             printf("Redirection Failed pls try again\n");   //terminate the process 
             exit(EXIT_FAILURE);
         }       
-        if(INVALID_ARGUMENTS == input_fd){
+        if(INVALID_ARGUMENTS == input_fd){ //invalid args to handle_input_redirection()
             printf("Invalid Arguments passed to redirection command");
         }
 
         // Handle output redirection if logging is enabled
         if (log_fd != LOG_DISABLED) {
-            close(pipefd[0]);  // Close read end
-            dup2(pipefd[1], STDOUT_FILENO);
-            close(pipefd[1]);
+            close(pipefd[PIPE_READ_END]);                   // Close read end
+            dup2(pipefd[PIPE_WRITE_END], STDOUT_FILENO);    // Copy the pipe read end to stdoutfileno
+            close(pipefd[PIPE_WRITE_END]);                  // Free the orig copy of the file entry of logfile in descriptor table
         }
 
-        // Execute program
+        // Execute the program with modified args
         fexecve(mem_fd, arguments, envp);
         printf("import_command_data::fexecve FAILED\n");
         exit(EXIT_FAILURE);
     } else if (pid > 0) {   // Parent process
-        assert(pid != 0);   //trigger means fexecve failed. Currently in child process
+        assert(pid != 0 && "fexecve in child failed");   //trigger means fexecve failed. Currently in child process
 
         // If logging is enabled, read child's output from pipe and write to both stdout and log
         if (log_fd != LOG_DISABLED) {
-            close(pipefd[1]);  // Close write end
+            close(pipefd[PIPE_WRITE_END]);  // Close write end
             
-            //read the output buffers data
+            //read the output buffers data and write it to the output buffers
             char buffer[READ_BUFFER_SIZE];
             ssize_t n;
             while ((n = read(pipefd[0], buffer, READ_BUFFER_SIZE)) > 0) {
@@ -681,18 +681,18 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
                 write(log_fd, buffer, n);   // Write to log file
             }
             
-            close(pipefd[0]);   //close the pipes read end
+            close(pipefd[PIPE_READ_END]);   //close the pipes read end
         }
 
         // Parent process
-        int status;         //status code for whether waitpid was executed or not
-        waitpid(pid, &status, 0);
+        int status;                 //status code for whether waitpid was executed or not
+        waitpid(pid, &status, 0);   //wait for child to finish
         
-        free(command);
+        free(command);              //clean up resources
         return status;
     }
 
-    return COMMAND_EXECUTION_FAILED;
+    return COMMAND_EXECUTION_FAILED;        //fork failed, hence return failure
 }
 int handle_input_redirection(const Command* cmd, const char* cwd_path){
     assert(command_is_valid(cmd));
@@ -1278,8 +1278,6 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
 }
 */
 /**
- * Execute a series of piped commands
- * 
  * @param cmd_list The list of commands to execute
  * @param cwd The current working directory
  * @param envp Environment variables
@@ -1531,7 +1529,7 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
     return OPERATION_SUCCEED;
 }
 /**
- * Sets up a pipe to capture output from the last command in a pipeline
+ * Sets up a pipe to redirect output from the last command in a pipeline
  * and duplicate it to both stdout and a log file
  * 
  * @param pipe_cmds The pipe commands structure
@@ -1916,320 +1914,3 @@ void test_all(void){
 }
 //TESTING BLOCK ENDS
 //---------------------------------------------------------------------------------------------------------
-
-
-/*
-#define MAX_PIPELINE 10  // Maximum number of commands in a pipeline
-
-// Pipeline structure to represent a series of piped commands
-typedef struct {
-    Command* commands[MAX_PIPELINE];
-    int count;
-    bool has_input_redirection;
-    char* input_file;
-} Pipeline;
-
-// Pipeline constructor
-Pipeline* pipeline_create() {
-    Pipeline* pipeline = (Pipeline*)malloc(sizeof(Pipeline));
-    if (!pipeline) return NULL;
-    
-    pipeline->count = 0;
-    pipeline->has_input_redirection = false;
-    pipeline->input_file = NULL;
-    
-    for (int i = 0; i < MAX_PIPELINE; i++) {
-        pipeline->commands[i] = NULL;
-    }
-    
-    return pipeline;
-}
-
-// Pipeline destructor
-void pipeline_destroy(Pipeline* pipeline) {
-    if (!pipeline) return;
-    
-    for (int i = 0; i < pipeline->count; i++) {
-        command_destroy(pipeline->commands[i]);
-    }
-    
-    if (pipeline->input_file) {
-        free(pipeline->input_file);
-    }
-    
-    free(pipeline);
-}
-
-// Parse input into a pipeline of commands
-Pipeline* parse_pipeline(const char* input) {
-    assert(input != NULL);
-    if (!input) return NULL;
-    
-    Pipeline* pipeline = pipeline_create();
-    if (!pipeline) return NULL;
-    
-    char* input_copy = strdup(input);
-    if (!input_copy) {
-        pipeline_destroy(pipeline);
-        return NULL;
-    }
-    
-    // Split by pipe character
-    char* cmd_str = strtok(input_copy, "|");
-    while (cmd_str && pipeline->count < MAX_PIPELINE) {
-        // Trim leading whitespace
-        while (isspace(*cmd_str)) cmd_str++;
-        
-        // Parse individual command
-        Command* cmd = command_create(cmd_str);
-        if (!cmd) {
-            pipeline_destroy(pipeline);
-            free(input_copy);
-            return NULL;
-        }
-        
-        // Add command to pipeline
-        pipeline->commands[pipeline->count++] = cmd;
-        
-        // Get next command in pipeline
-        cmd_str = strtok(NULL, "|");
-    }
-    
-    free(input_copy);
-    
-    // Check for input redirection in the first command
-    if (pipeline->count > 0) {
-        Command* first_cmd = pipeline->commands[0];
-        for (int i = 0; i < first_cmd->argc; i++) {
-            if (strcmp(first_cmd->argv[i], "<") == 0 && i + 1 < first_cmd->argc) {
-                pipeline->has_input_redirection = true;
-                pipeline->input_file = strdup(first_cmd->argv[i + 1]);
-                
-                // Remove redirection from the command arguments
-                for (int j = i; j + 2 < first_cmd->argc; j++) {
-                    free(first_cmd->argv[j]);
-                    first_cmd->argv[j] = strdup(first_cmd->argv[j + 2]);
-                }
-                free(first_cmd->argv[first_cmd->argc - 1]);
-                free(first_cmd->argv[first_cmd->argc - 2]);
-                first_cmd->argc -= 2;
-                break;
-            }
-        }
-    }
-    
-    return pipeline;
-}
-
-// Execute a pipeline of commands
-bool execute_pipeline(Pipeline* pipeline, Curr_Dir* cwd, char* envp[], int log_fd) {
-    assert(pipeline != NULL);
-    assert(cwd != NULL);
-    
-    if (!pipeline || pipeline->count == 0) return false;
-    
-    // If there's only one command in the pipeline
-    if (pipeline->count == 1) {
-        return execute_command_with_logging(pipeline->commands[0], cwd, envp, 
-                                          pipeline->has_input_redirection ? pipeline->input_file : NULL,
-                                          log_fd);
-    }
-    
-    // Create array of pipes for the pipeline
-    int pipes[MAX_PIPELINE-1][2];
-    for (int i = 0; i < pipeline->count - 1; i++) {
-        if (pipe(pipes[i]) == -1) {
-            perror("pipe");
-            return false;
-        }
-    }
-    
-    // Create children for each command in the pipeline
-    pid_t pids[MAX_PIPELINE] = {0};
-    
-    for (int i = 0; i < pipeline->count; i++) {
-        pids[i] = fork();
-        
-        if (pids[i] < 0) {
-            // Fork failed
-            perror("fork");
-            
-            // Close all the pipes
-            for (int j = 0; j < pipeline->count - 1; j++) {
-                close(pipes[j][0]);
-                close(pipes[j][1]);
-            }
-            
-            return false;
-        } else if (pids[i] == 0) {
-            // Child process
-            
-            // Set up input redirection for the first command
-            if (i == 0 && pipeline->has_input_redirection) {
-                char filepath[MAX_LINE_SIZE] = {0};
-                strncpy(filepath, cwd->path, MAX_LINE_SIZE);
-                if (filepath[strlen(filepath) - 1] != '/') {
-                    strcat(filepath, "/");
-                }
-                strcat(filepath, pipeline->input_file);
-                
-                int input_fd = nqp_open(filepath);
-                if (input_fd < 0) {
-                    fprintf(stderr, "Input file not found: %s\n", pipeline->input_file);
-                    exit(EXIT_FAILURE);
-                }
-                
-                int mem_fd = memfd_create("InputRedirection", 0);
-                if (mem_fd < 0) {
-                    perror("memfd_create");
-                    nqp_close(input_fd);
-                    exit(EXIT_FAILURE);
-                }
-                
-                char buffer[READ_BUFFER_SIZE];
-                ssize_t bytes_read;
-                while ((bytes_read = nqp_read(input_fd, buffer, READ_BUFFER_SIZE)) > 0) {
-                    write(mem_fd, buffer, bytes_read);
-                }
-                
-                nqp_close(input_fd);
-                lseek(mem_fd, 0, SEEK_SET);
-                
-                dup2(mem_fd, STDIN_FILENO);
-                close(mem_fd);
-            }
-            // Hook up inputs and outputs to pipes
-            else if (i > 0) {
-                // Connect input to the previous pipe
-                dup2(pipes[i-1][0], STDIN_FILENO);
-            }
-            
-            if (i < pipeline->count - 1) {
-                // Connect output to the next pipe
-                dup2(pipes[i][1], STDOUT_FILENO);
-            } else if (log_fd > 0) {
-                // For the last command, duplicate output to log file if logging is enabled
-                int pipe_for_log[2];
-                if (pipe(pipe_for_log) == -1) {
-                    perror("pipe for logging");
-                    exit(EXIT_FAILURE);
-                }
-                
-                pid_t tee_pid = fork();
-                if (tee_pid == 0) {
-                    // Child process for tee-like functionality
-                    close(pipe_for_log[1]);
-                    dup2(pipe_for_log[0], STDIN_FILENO);
-                    close(pipe_for_log[0]);
-                    
-                    char buffer[READ_BUFFER_SIZE];
-                    ssize_t bytes_read;
-                    
-                    while ((bytes_read = read(STDIN_FILENO, buffer, READ_BUFFER_SIZE)) > 0) {
-                        write(STDOUT_FILENO, buffer, bytes_read);
-                        write(log_fd, buffer, bytes_read);
-                    }
-                    
-                    exit(EXIT_SUCCESS);
-                } else {
-                    // Parent (command) process
-                    close(pipe_for_log[0]);
-                    dup2(pipe_for_log[1], STDOUT_FILENO);
-                    close(pipe_for_log[1]);
-                }
-            }
-            
-            // Close all the pipes we don't need anymore
-            for (int j = 0; j < pipeline->count - 1; j++) {
-                close(pipes[j][0]);
-                close(pipes[j][1]);
-            }
-            
-            // Execute the command
-            if (is_builtin(pipeline->commands[i]->argv[0])) {
-                execute_builtin(pipeline->commands[i], cwd);
-                exit(EXIT_SUCCESS);
-            } else {
-                execute_external_command(pipeline->commands[i], cwd, envp);
-                fprintf(stderr, "Failed to execute: %s\n", pipeline->commands[i]->argv[0]);
-                exit(EXIT_FAILURE);
-            }
-        }
-    }
-    
-    // Parent process: Close all pipes
-    for (int i = 0; i < pipeline->count - 1; i++) {
-        close(pipes[i][0]);
-        close(pipes[i][1]);
-    }
-    
-    // Wait for all children to finish
-    for (int i = 0; i < pipeline->count; i++) {
-        int status;
-        waitpid(pids[i], &status, 0);
-    }
-    
-    return true;
-}
-
-// Helper function to check if a command is a builtin
-bool is_builtin(const char* cmd) {
-    return (strcmp(cmd, "cd") == 0 || 
-            strcmp(cmd, "pwd") == 0 || 
-            strcmp(cmd, "ls") == 0);
-}
-
-// Execute builtin commands
-void execute_builtin(Command* cmd, Curr_Dir* cwd) {
-    assert(cmd != NULL);
-    assert(cwd != NULL);
-    
-    if (strcmp(cmd->argv[0], "cd") == 0) {
-        if (cmd->argc > 1) {
-            command_cd(cmd->argv[1], cwd);
-        } else {
-            command_cd("/", cwd);
-        }
-    } else if (strcmp(cmd->argv[0], "pwd") == 0) {
-        command_pwd(cwd);
-    } else if (strcmp(cmd->argv[0], "ls") == 0) {
-        command_ls(cwd);
-    }
-}
-
-// Execute external command
-void execute_external_command(Command* cmd, Curr_Dir* cwd, char* envp[]) {
-    char filepath[MAX_LINE_SIZE] = {0};
-    strcpy(filepath, cwd->path);
-    if (filepath[strlen(filepath) - 1] != '/') {
-        strcat(filepath, "/");
-    }
-    strcat(filepath, cmd->argv[0]);
-    
-    int nqp_fd = nqp_open(filepath);
-    if (nqp_fd < 0) {
-        fprintf(stderr, "Command not found: %s\n", cmd->argv[0]);
-        exit(EXIT_FAILURE);
-    }
-    
-    int mem_fd = memfd_create("ExecutableFile", 0);
-    if (mem_fd < 0) {
-        perror("memfd_create");
-        nqp_close(nqp_fd);
-        exit(EXIT_FAILURE);
-    }
-    
-    char buffer[READ_BUFFER_SIZE];
-    ssize_t bytes_read;
-    while ((bytes_read = nqp_read(nqp_fd, buffer, READ_BUFFER_SIZE)) > 0) {
-        write(mem_fd, buffer, bytes_read);
-    }
-    
-    nqp_close(nqp_fd);
-    lseek(mem_fd, 0, SEEK_SET);
-    
-    fexecve(mem_fd, cmd->argv, envp);
-    perror("fexecve");
-    exit(EXIT_FAILURE);
-}
-*/
