@@ -33,6 +33,11 @@
 #define OPERATION_FAILED -500
 #define OPERATION_SUCCEED 500
 
+//LOGGING RELATED GLOBALS
+#define LOG_DISABLED -1
+#include <fcntl.h>
+int log_fd = LOG_DISABLED;
+
 
 
 //CURRENT DIRECTORY STRUCT
@@ -571,13 +576,25 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
     nqp_close(nqp_fd);  
     lseek(mem_fd, 0, SEEK_SET);
 
-    //split the process
+    //handle the output redirection through a pipe if logging is enable
+    int pipefd[2] = {-1, -1};
+    if (log_fd != LOG_DISABLED) {
+        // Create pipe for capturing command output
+        if (pipe(pipefd) < 0) {
+            perror("pipe");
+            free(command);
+            nqp_close(nqp_fd);
+            return COMMAND_EXECUTION_FAILED;
+        }
+    }
+
+    //split the process for execign the command
     pid_t pid = fork();
     if(0 == pid){   //child process
         //verify arguments
         char** arguments = cmd->argv;
 
-        //handle the redirection
+        //handle the input redirection
         int input_fd = -1;
         input_fd = handle_input_redirection(cmd,curr_path);
         if (input_fd > 0) { //if input_fd is different than STDIN_FILENO then redirection is enabled
@@ -597,12 +614,36 @@ int import_command_data(const Command* cmd, const char* curr_path, char *envp[])
         if(INVALID_ARGUMENTS == input_fd){
             printf("Invalid Arguments passed to redirection command");
         }
+
+        // Handle output redirection if logging is enabled
+        if (log_fd != LOG_DISABLED) {
+            close(pipefd[0]);  // Close read end
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
+        }
+
         // Execute program
         fexecve(mem_fd, arguments, envp);
         printf("import_command_data::fexecve FAILED\n");
         exit(EXIT_FAILURE);
     } else if (pid > 0) {   // Parent process
         assert(pid != 0);   //trigger means fexecve failed. Currently in child process
+
+        // If logging is enabled, read child's output from pipe and write to both stdout and log
+        if (log_fd != LOG_DISABLED) {
+            close(pipefd[1]);  // Close write end
+            
+            //read the output buffers data
+            char buffer[READ_BUFFER_SIZE];
+            ssize_t n;
+            while ((n = read(pipefd[0], buffer, READ_BUFFER_SIZE)) > 0) {
+                write(STDOUT_FILENO, buffer, n);    // Write to stdout
+                write(log_fd, buffer, n);   // Write to log file
+            }
+            
+            close(pipefd[0]);   //close the pipes read end
+        }
+
         // Parent process
         int status;         //status code for whether waitpid was executed or not
         waitpid(pid, &status, 0);
@@ -688,6 +729,28 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
     }
     //if there is no redirection needed, then return the standard input file num
     return STDIN_FILENO;
+}
+
+
+
+//LOGGING RELATED ROUTINES
+void custom_print(const char *message) {
+    assert(message != NULL);
+    if (!message) return;
+    
+    // Write to stdout
+    printf("%s",message);
+    fflush(stdout);
+    
+    // Write to log file if enabled
+    if (log_fd != LOG_DISABLED) {
+        write(log_fd, message, strlen(message));
+    }
+}
+void free_logs(){
+    if (log_fd != LOG_DISABLED) {
+        close(log_fd);
+    }
 }
 
 
@@ -1243,7 +1306,7 @@ int main( int argc, char *argv[], char *envp[] ){
     char *volume_label = NULL;
     nqp_error mount_error;
 
-    if ( argc != 2 ){
+    if ( argc != 2 && argc != 4){
         fprintf( stderr, "Usage: ./nqp_shell volume.img\n" );
         exit( EXIT_FAILURE );
     }
@@ -1261,6 +1324,21 @@ int main( int argc, char *argv[], char *envp[] ){
 
     printf( "%s:\\> ", volume_label );
 
+    //LOG INITIALISING
+    if (argc == 4) {    //must have 4 => ./nqp_shell root.img -o log_file.txt
+        if (strcmp(argv[2], "-o") != 0) {
+            fprintf(stderr, "INVALID Usage: Must be ./nqp_shell volume.img [-o log.txt]\n");
+            exit(EXIT_FAILURE);
+        }
+        
+        // Open log file
+        log_fd = open(argv[3], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (log_fd < 0) {
+            perror("Failed to open log file");
+            exit(EXIT_FAILURE);
+        }
+    }
+
     //TESTING
     //test_all();
     //TESTING
@@ -1270,11 +1348,12 @@ int main( int argc, char *argv[], char *envp[] ){
     while (true){
         char mssg[MAX_LINE_SIZE] = {0};
         snprintf(mssg, MAX_LINE_SIZE, "%s:\\> ",volume_label);
-        char* line = readline(mssg);
+        char* line = readline("");
+        custom_print(mssg);
         strncpy(line_buffer, line, MAX_LINE_SIZE);
 
         if (line == NULL) { // EOF (Ctrl+D pressed)
-            printf("\n");
+            custom_print("\n");
             break;
         }
 
@@ -1318,7 +1397,7 @@ int main( int argc, char *argv[], char *envp[] ){
         //Execute the command if pipes are not present
         if(!execute_command(new_command, cwd, envp) && 0 == num_pipes){
             assert(false);
-            printf("Failure to execute the command:\n");
+            custom_print("Failure to execute the command:\n");
             command_print(new_command);
 
             command_destroy(new_command);
@@ -1334,6 +1413,7 @@ int main( int argc, char *argv[], char *envp[] ){
     if(NULL != cwd){
         destroy_curr_dir(cwd);
     }
+    free_logs();    //close the log related resources
     return EXIT_SUCCESS;
 
 }

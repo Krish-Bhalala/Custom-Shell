@@ -49,6 +49,9 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path);
 int calc_num_pipes_marker(const Command* cmd);
 bool validate_pipe_positions(const Command* cmd);
 
+//LOGGING RELATED ROUTINES
+void log_output(const char *message);
+
 //validators
 bool is_valid_string(const char* str);
 bool is_only_whitespace(const char *str);
