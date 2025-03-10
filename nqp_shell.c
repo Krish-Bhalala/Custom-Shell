@@ -1,112 +1,122 @@
-#define _GNU_SOURCE    // For fexecve
-#include <sys/mman.h>  // For memfd_create
-#include <unistd.h>    // For read, write, fork, lseek
-#include <sys/wait.h>  // For waitpid
-
-//for the bonus part: navigating the history
-#include <stdio.h>
-#include <readline/readline.h>
-#include <readline/history.h>
+#define _GNU_SOURCE                     // For fexecve
+#include <sys/mman.h>                   // For memfd_create
+#include <unistd.h>                     // For read, write, fork, lseek
+#include <sys/wait.h>                   // For waitpid
 
 #include <stdlib.h>
+#include <stdio.h>
+#include <readline/readline.h>          //for the bonus part: reading the command line
+#include <readline/history.h>           //for the bonus part: navigating the command line history
 
-#include "nqp_io.h"
+#include "nqp_io.h"                     //file system module
 #include "nqp_shell.h"
 
 #include <assert.h>
 #include <stdint.h>
 #include <ctype.h>
 
+//ASSERTION HELPER CONSTANTS
+#define MAX_ARGS 164                    
+#define MAX_ARG_LENGTH 256              
 
-//COMMAND RELATED CONSTANTS
-#define MAX_ARGS 64
-#define MAX_ARG_LENGTH 256
-#define READ_BUFFER_SIZE 4096  //1024 * 4
+//IO CONSTANTS
+#define READ_BUFFER_SIZE 4096               //1024 * 4 bytes to read from the nqp_file system
+#define PIPE_READ_END 0                     //index of pipe's read end
+#define PIPE_WRITE_END 1                    //index of pipe's read end
+
+//RETURN CODES
 #define COMMAND_NOT_FOUND -404
 #define COMMAND_EXECUTION_FAILED -403
 #define INVALID_ARGUMENTS -300
 #define INSUFFICIENT_ARGUMENTS -301
 #define REDIRECTION_FAILED -400
 #define INVALID_USECASE -204
-#define PIPE_READ_END 0
-#define PIPE_WRITE_END 0
 #define OPERATION_FAILED -500
 #define OPERATION_SUCCEED 500
 
 //LOGGING RELATED GLOBALS
-#define LOG_DISABLED -1
-#include <fcntl.h>
-int log_fd = LOG_DISABLED;
+#define LOG_DISABLED -1                     //flag indicating log is disabeled
+#include <fcntl.h>                          //for open()
+int log_fd = LOG_DISABLED;                  //stores the fd for the log file
 
 
-
-//CURRENT DIRECTORY STRUCT
-// typedef struct{
-//     char path[MAX_LINE_SIZE];
-// } Curr_Dir;
+//----------------------------------
+//CURRENT DIRECTORY OBJECT ROUTINES
+//----------------------------------
+// Creates a new directory object initialized to the root directory.
 Curr_Dir* construct_empty_curr_dir(void){
-    //create struct
+    // Allocate memory for struct.
     Curr_Dir* cwd = (Curr_Dir*)malloc(sizeof(Curr_Dir));
     assert(NULL != cwd);
-    if(NULL == cwd) return NULL;
+    if(NULL == cwd) return NULL;        // Return null if allocation failed.
 
-    //initialize with root directory path
-    strncpy(cwd->path, "/", MAX_LINE_SIZE);
-    assert(is_valid_path(cwd->path));
+    // Set the path to the root directory.
+    strncpy(cwd->path, "/", MAX_LINE_SIZE);  
+    assert(is_valid_path(cwd->path));   // Verify the path is valid.
 
-    //verify it
+    // Validate the directory object.
     assert(is_valid_curr_dir(cwd));
-    if(!is_valid_curr_dir(cwd)){    //invalid struct hence free it
-        destroy_curr_dir(cwd);
-        return NULL;
+    if(!is_valid_curr_dir(cwd)){        //invalid curr_dir, do clean up
+        destroy_curr_dir(cwd);  
+        return NULL;  
     }
 
-    //return it
-    return cwd;
+    return cwd;  
 }
+
+// Constructs a directory object from a given path.
 Curr_Dir* construct_curr_dir(const char* path){
-    //input validation
-    assert(is_valid_path(path));
-    if(!is_valid_path(path)) return NULL;
+    // Validate the input path.
+    assert(is_valid_path(path));  
+    if(!is_valid_path(path)) return NULL;       // Return null for invalid paths.
 
-    //create struct
+    // Allocate memory for struct
     Curr_Dir* cwd = malloc(sizeof(Curr_Dir));
-    strncpy(cwd->path, path, MAX_LINE_SIZE);
+    if(NULL == cwd) return NULL;                // malloc failure, so return null  
+    strncpy(cwd->path, path, MAX_LINE_SIZE);    // Copy the path into struct.
 
-    //verify it
-    assert(is_valid_curr_dir(cwd));
-    if(NULL == cwd) return NULL;
-    if(!is_valid_curr_dir(cwd)){    //invalid struct hence free it
-        destroy_curr_dir(cwd);
-        return NULL;
+    // Validate the directory object.
+    assert(is_valid_curr_dir(cwd));  
+    if(!is_valid_curr_dir(cwd)){    //invalid struct ,so free resources.
+        destroy_curr_dir(cwd);  
+        return NULL;  
     }
 
-    //return it
-    return cwd;
+    return cwd;  
 }
+
+// Frees the memory allocated for a directory object (frre the struct).
 void destroy_curr_dir(Curr_Dir* cwd){
     if(NULL == cwd) return;
     free(cwd);
 }
+
+// Updates the path stored in a <cwd>.
 void set_path(Curr_Dir* cwd,const char* path){
-    assert(NULL != cwd);
+    //Validation checks
+    assert(NULL != cwd);       
     assert(NULL != path);
     assert(is_valid_path(path));
-    if(NULL == cwd || NULL == path) return;
+    if(NULL == cwd || NULL == path) return; 
+
+    //Update the path
     if(is_valid_curr_dir(cwd)){
         strncpy(cwd->path, path, MAX_LINE_SIZE);
     }
 }
 
 
-
+//----------
 //VALIDATORS
+//----------
+//String Validator
 bool is_valid_string(const char* str){
     if(NULL == str) return false;
     if(strlen(str) < 1) return false;
     if(strlen(str) > MAX_LINE_SIZE) return false;
     return true;
 }
+//EMPTY String validator
 bool is_only_whitespace(const char *str) {
     while (*str) {
         if (!isspace((unsigned char)*str)) {
@@ -116,14 +126,14 @@ bool is_only_whitespace(const char *str) {
     }
     return true;
 }
+//File path validator
 bool is_valid_path(const char* path){
     if(NULL == path) return false;
-    if(strlen(path) < 1) return false;
+    if(strlen(path) < 1) return false;              //must have 1 char for root "/"
     if(strlen(path) > MAX_LINE_SIZE) return false;
-    if('/' != path[0]) return false;
-    if(strlen(path) < 1) return false;
-    //if('/' != path[strlen(path)-1]) return false;
-    //making sure if path do not contain consecutive "/"
+    if('/' != path[0]) return false;                //must start with root "/"
+
+    //check for back to back '/' chars. //,///,///..., etc {NOT ALLOWED}
     int slash_count = 0;
     for (int i = 0; path[i] != '\0'; i++) {
         if (path[i] == '/') {
@@ -137,11 +147,13 @@ bool is_valid_path(const char* path){
     }
     return true;
 }
+//Current working directory validaotor
 bool is_valid_curr_dir(const Curr_Dir *cwd){
     if(NULL == cwd) return false;
-    if(!is_valid_path(cwd->path)) return false;
+    if(!is_valid_path(cwd->path)) return false;     //check if the path is valid
     return true;
 }
+//Prints NULL terminated strings
 void print_string_array(const char *arr[]) {
     for (int i = 0; arr[i] != NULL; i++) {
         printf("%s\n", arr[i]);
@@ -153,7 +165,10 @@ void print_string_array(const char *arr[]) {
     
 }
 
+//--------
 //HELPERS
+//--------
+//Trims leading and trailing spaces
 void trim_string(char *str) {
     if(!str) return;
     if(strlen(str) < 1) return;
@@ -176,29 +191,28 @@ void trim_string(char *str) {
 }
 
 
-
+//---------
 //BUILTINS
-/*
-command_pwd()
-*/
+//---------
+//Print Working Directory: prints absolute path of cwd
 void command_pwd(const Curr_Dir *cwd) {
     assert(is_valid_curr_dir(cwd));
-    if(!is_valid_curr_dir(cwd)) return;
-    printf("%s\n", cwd->path);
+    if(!is_valid_curr_dir(cwd)) return;         //validation
+    printf("%s\n", cwd->path);                  //printing
 }
-/*
-command_ls()
-*/
+
+//List: list the content of the files
 void command_ls(const Curr_Dir* cwd){
+    //cwd validation
     assert(NULL != cwd);
     assert(is_valid_curr_dir(cwd));
     if(!is_valid_curr_dir(cwd)) return;
 
-    nqp_dirent entry = {0};
-    int fd = -1;
+    nqp_dirent entry = {0};     
+    int fd = -1;              
     ssize_t dirents_read;
 
-    //copying the parameters
+    //copying the function parameters
     char* curr_path = strdup(cwd->path);
     assert(is_valid_path(curr_path));
     if(!is_valid_path(curr_path)){
@@ -206,7 +220,7 @@ void command_ls(const Curr_Dir* cwd){
         return;
     }
 
-    //open the file
+    //open the file in the mounted file system
     fd = nqp_open(curr_path);
     if ( fd == NQP_FILE_NOT_FOUND ){
         fprintf(stderr, "%s not found\n", curr_path );
@@ -214,27 +228,32 @@ void command_ls(const Curr_Dir* cwd){
         return; //file open failed
     }
 
-    //read its directory entries
+    //read the files directory entries
     while ( ( dirents_read = nqp_getdents( fd, &entry, 1 ) ) > 0 ){
-        //print its metadata
-        printf( "%lu %s", entry.inode_number, entry.name );
-        if ( entry.type == DT_DIR ){
+        printf( "%lu %s", entry.inode_number, entry.name ); //print its metadata
+        if ( entry.type == DT_DIR ){                        //append "/", if its a directory
             putchar('/');
         }
         putchar('\n');
         free( entry.name );
     }
+
+    //if not a directory then throw error
     if ( dirents_read == -1 ){
         fprintf( stderr, "%s is not a directory\n", curr_path );
     }
+
+    //clean up resources
     nqp_close( fd );
     free(curr_path);
 }
+
 /*
- * command_cd()
- * ".." OR "../" OR ""..<anything>"" Takes to parent dir
- * "/" OR "/<anything>" Takes to root dir
- * "<folder>" takes to that folder in the current directory
+ * Change Directory: changes the current working directory to <path> folder inside the cwd
+ * "cd .." OR "cd ../" OR "cd ..<anything>" Takes to parent dir
+ * "cd /" OR "cd /<anything>" OR "cd" Takes to root dir
+ * "cd <path>" takes to that folder in the current directory
+ * Other operations are not permitted
  */
 void command_cd(const char* path, Curr_Dir* cwd){
     //Input validation
@@ -243,10 +262,8 @@ void command_cd(const char* path, Curr_Dir* cwd){
         printf("Error: Invalid path string\n");
         return;
     }
-    if(strlen(path) == 0 || path[0] == ' '){
-        //if path is NOT starting with a non empty character then change to root dir
+    if(strlen(path) == 0 || path[0] == ' '){ //if path is NOT starting with a non empty character then change to root dir
         strncpy(cwd->path, "/", MAX_LINE_SIZE);
-        //printf("Changed to root directory\n");
         return;
     }
     if(!is_valid_string(path)) {
@@ -257,16 +274,14 @@ void command_cd(const char* path, Curr_Dir* cwd){
     //copying the parameters
     char* curr_path = cwd->path;
 
-
-    //check for ".." request
-    if(strncmp(path,"..",2) == 0){
+    if(strncmp(path,"..",2) == 0){          // "cd .." request
         //CASE 1: Already in root dir, can't go up
         if (strcmp(cwd->path, "/") == 0) {
             //printf("Already at root directory, cannot go up\n");
             return;
         }
 
-        //CASE 2: Parent directory exist, so change the path to 
+        //CASE 2: Parent directory exist, so change the path to it by removing the last word
         for(int i=strlen(curr_path)-1; i>=0; i--){
             if('/' == curr_path[i]){
                 if(strcmp(curr_path, "/") != 0){
@@ -276,25 +291,29 @@ void command_cd(const char* path, Curr_Dir* cwd){
             }
             curr_path[i] = '\0';
         }
-        //printf("Changed to parent directory: %s\n", curr_path);
-    }else if(strcmp(path,"/") == 0){
+    }else if(strcmp(path,"/") == 0){        //"cd /" or "cd /something" request
         assert(strlen(path) == 1);
-        //printf("Changed to root directory\n");
         strncpy(cwd->path,"/",MAX_LINE_SIZE);
     }else{ //change to another directory
-        //create new path
+
+        //create new absolute path fot the <path>
         char new_path[MAX_LINE_SIZE] = {0};
-        strncpy(new_path,curr_path,MAX_LINE_SIZE);
-        strcat(new_path,path);
-        if(!is_valid_path(new_path)) {
+        if(curr_path[strlen(curr_path) - 1] != '/'){
+            snprintf(new_path, MAX_LINE_SIZE, "%s/%s", curr_path, path);
+        }else{
+            snprintf(new_path, MAX_LINE_SIZE, "%s%s", curr_path, path);
+        }
+        assert(is_valid_path(new_path));
+
+        if(!is_valid_path(new_path)) {      //validate the path
             printf("Error: Invalid path %s\n", new_path);
             return;
         }
 
-        //check if the new path exist in file system
+        //check if the new folder/file exist in mounted file system
         int fd = NQP_FILE_NOT_FOUND;
         fd = nqp_open(new_path);
-        if (fd < 0) {   //folder not found
+        if (fd < 0) {   
             printf("ERROR: Directory not found: %s\n", new_path);
             return;
         }
@@ -303,9 +322,9 @@ void command_cd(const char* path, Curr_Dir* cwd){
         ssize_t dirents_read;
         nqp_dirent entry = {0};
         dirents_read = nqp_getdents(fd,&entry,1);
-        nqp_close(fd);
+        nqp_close(fd);      //free the resources in mounted files system
     
-        if (dirents_read < 0) {
+        if (dirents_read < 0) { //dir not found
             printf("ERROR: Is not a directory: %s\n", new_path);
             return;
         }
@@ -315,26 +334,25 @@ void command_cd(const char* path, Curr_Dir* cwd){
         strcpy(curr_path, new_path);
         assert(is_valid_path(curr_path));
         assert(strncmp(cwd->path, new_path, MAX_LINE_SIZE) <= 0);
-        //printf("Changed to directory: %s\n", curr_path);
     }
     assert(is_valid_curr_dir(cwd));
 }
 
 
-
+//------------------------
 //COMMAND OBJECT ROUTINES
-// typedef struct {
-//     int argc;
-//     char** argv;
-// } Command;
-//constructor
+//------------------------
+//Constructor: parses the input, split from spaces, create a command object with NULL terminated argument array
 Command* command_create(const char* input) {
+    //input validation
     assert(input != NULL);
     if (!input) return NULL;
 
+    //allocate the memory
     Command* cmd = (Command*)malloc(sizeof(Command));
     if (!cmd) return NULL;
     
+    //initialise the instance vars
     cmd->argc = 0;
     cmd->argv = (char**)malloc(sizeof(char*) * MAX_ARGS);
     if (!cmd->argv) {
@@ -342,6 +360,7 @@ Command* command_create(const char* input) {
         return NULL;
     }
 
+    //create copy of the input param for working with it
     char* input_copy = strdup(input);
     if (!input_copy) {
         free(cmd->argv);
@@ -349,29 +368,32 @@ Command* command_create(const char* input) {
         return NULL;
     }
 
+    //tokenise the input by empty spaces
     char* token = strtok(input_copy, " \t\n");
     while (token && cmd->argc < MAX_ARGS) {
-        cmd->argv[cmd->argc] = strdup(token);
-        if (!cmd->argv[cmd->argc]) {    //if any argument fails
+        cmd->argv[cmd->argc] = strdup(token);       //store the token in the args vector
+        if (!cmd->argv[cmd->argc]) {                //if any argument fails
             for (int i = 0; i < cmd->argc; i++) free(cmd->argv[i]);
             free(cmd->argv);
             free(cmd);
             free(input_copy);
             return NULL;
         }
-        cmd->argc++;    //add next argument
+        cmd->argc++;                                //add next argument
         token = strtok(NULL, " \t\n");
     }
 
+    //terminate the args vector by NULL 
     if(NULL != cmd->argv[cmd->argc]){
         printf("%s",input);
         cmd->argv[cmd->argc] = NULL;
     }
 
-    free(input_copy);   //free the input copy
+    free(input_copy);   //free the input param copy
     return cmd;
 }
-//destructor
+
+//Destructor for command object
 void command_destroy(Command* cmd) {
     if (!cmd) return;
     for (int i = 0; i < cmd->argc; i++) {
@@ -380,11 +402,13 @@ void command_destroy(Command* cmd) {
     free(cmd->argv);
     free(cmd);
 }
-//validator
+
+//Validator for command object
 bool command_is_valid(const Command* cmd) {
     return (cmd && cmd->argv && cmd->argc > 0 && cmd->argc <= MAX_ARGS);
 }
-//getter
+
+//Getter: returns the ith argument of the command
 const char* command_get_arg(const Command* cmd, int index) {
     // assert(cmd != NULL);
     // assert(index >= 0);
@@ -392,141 +416,157 @@ const char* command_get_arg(const Command* cmd, int index) {
     if (!cmd || index < 0 || index >= cmd->argc) return NULL;
     return cmd->argv[index];
 }
-//for debugging command object
+
+//Printer: for debugging command object, prints the argc and argv
 void command_print(const Command* cmd) {
     assert(cmd != NULL);
     if (!cmd) return;
-    printf("argc = %d\n", cmd->argc);
-    printf("argv = [");
+    printf("argc = %d\n", cmd->argc);   //print argc
+    printf("argv = [");                 //print argv
     for (int i = 0; i < cmd->argc; i++) {
         printf("\"%s\"", cmd->argv[i]);
         if (i < cmd->argc - 1) printf(", ");
     }
     printf("]\n");
 }
-//instance methods
-bool execute_command(const Command* cmd, Curr_Dir* cwd, char *envp[]){
+
+// Executor: parses the command object and executes respective commands
+bool execute_command(const Command* cmd, Curr_Dir* cwd, char *envp[]) {
+    // Make sure the command is valid and has a non-negative argument count
     assert(NULL != cmd);
     assert(cmd->argc >= 0);
-    if(!cmd || cmd->argc < 0) return false;
-    if(cmd->argc == 0) return true; //to ask user for next command
+    if (!cmd || cmd->argc < 0) return false; // Invalid command
+    if (cmd->argc == 0) return true; // No arguments, ask user for the next command
     assert(cmd->argc > 0);
 
-    //read the command
-    const char* argv_0 = command_get_arg(cmd,0);
-    if(!argv_0) return false;
-    char* command = strdup(argv_0);
+    // Read the first argument (the command name)
+    const char* argv_0 = command_get_arg(cmd, 0);
+    if (!argv_0) return false; // Command name is missing
+    char* command = strdup(argv_0); // Copy the command name into a new string
     assert(command != NULL);
-    if(!command) return false;  //failure in fetching the command
+    if (!command) return false; // Memory allocation failed
 
-    //match it with builtins
-    if(strcmp(command,"cd") == 0){  //call cd
-        const char* argv_1 = command_get_arg(cmd,1);
-        if(argv_1){
-            char* destination = strdup(argv_1);
+    // Check if the command matches built-in commands
+    if (strcmp(command, "cd") == 0) { // Handle "cd" (change directory)
+        const char* argv_1 = command_get_arg(cmd, 1); // Get the target directory
+        if (argv_1) {
+            char* destination = strdup(argv_1); // Copy the directory name
             assert(NULL != destination);
-            command_cd(destination,cwd);
-            free(destination);
+            command_cd(destination, cwd); // Change to the target directory
+            free(destination); // Free memory for the directory name
             return true;
         }
-    }else if(strcmp(command,"ls") == 0){  //call cd
+    } else if (strcmp(command, "ls") == 0) { // Handle "ls" (list directory contents)
         command_ls(cwd);
-    }else if(strcmp(command,"pwd") == 0){  //call cd
+    } else if (strcmp(command, "pwd") == 0) { // Handle "pwd" (print current directory)
         command_pwd(cwd);
-    }else{
+    } else { // Not a built-in command, execute it as an external command
         int return_code = -1;
-        if((return_code = import_command_data(cmd,cwd->path, envp)) < 0){
-            if(return_code == COMMAND_EXECUTION_FAILED) fprintf(stderr, "Failure executing command: %s\n", argv_0);
-            else if(return_code == COMMAND_NOT_FOUND) fprintf(stderr, "execute_command:Command not found in mounted disk: %s\n", argv_0);
-            else fprintf(stderr, "Command execution failed with error code {%d} for command: %s\n", return_code,argv_0);
+        if ((return_code = import_command_data(cmd, cwd->path, envp)) < 0) {
+            // Print error messages
+            if (return_code == COMMAND_EXECUTION_FAILED) 
+                fprintf(stderr, "Failure executing command: %s\n", argv_0);
+            else if (return_code == COMMAND_NOT_FOUND) 
+                fprintf(stderr, "execute_command: Command not found in mounted disk: %s\n", argv_0);
+            else 
+                fprintf(stderr, "Command execution failed with error code {%d} for command: %s\n", return_code, argv_0);
         }
     }
 
-    free(command);
-    return true;
+    free(command); // Free memory for the copied command name
+    return true;   // Command executed successfully or handled appropriately
 }
-//creates a custom NULL terminated arguments
-char** create_arguments_for_redirection(const Command* cmd){
+
+// Creates a custom NULL-terminated list of arguments for redirection
+char** create_arguments_for_redirection(const Command* cmd) {
+    // input param validation
     assert(command_is_valid(cmd));
-    if(!command_is_valid(cmd)){
-        perror("create_arguments_for_redirection: INVALID ARGUMENTS");
-        return NULL;
+    if (!command_is_valid(cmd)) {
+        perror("create_arguments_for_redirection: INVALID ARGUMENTS"); // Print error if invalid
+        return NULL; // Return NULL for invalid commands
     }
     
-    //count the number of arguments before "<"
+    // Count the number of arguments before "<" (redirection symbol)
     int count = 0;
-    int i=0;
-    while(i<cmd->argc && strcmp(command_get_arg(cmd,i),"<") != 0){
+    int i = 0;
+    while (i < cmd->argc && strcmp(command_get_arg(cmd, i), "<") != 0) {
         count++;
         i++;
     }
-    assert(strcmp(command_get_arg(cmd,count-1),"<") != 0);
+    assert(strcmp(command_get_arg(cmd, count - 1), "<") != 0); // Ensure last argument before "<" is valid
 
-    //create a copy of the new arguments including the NULL terminator argument
+    // Allocate memory for the new argument list (including NULL terminator)
     char** filtered_args = malloc((count + 1) * sizeof(char *));
     assert(NULL != filtered_args);
-    if(!filtered_args){
-        perror("create_arguments_for_redirection: malloc fail");
-        return NULL;
+    if (!filtered_args) {
+        perror("create_arguments_for_redirection: malloc fail"); // Print error if memory allocation fails
+        return NULL; // Return NULL on failure
     }
-    for(int k=0; k<count; k++){
-        filtered_args[k] = strdup(command_get_arg(cmd,k));
-        if (NULL == filtered_args[k]) {
-            perror("create_arguments_for_redirection: strdup fail");
-            return NULL;
+
+    // Copy arguments before "<" into the new list
+    for (int k = 0; k < count; k++) {
+        filtered_args[k] = strdup(command_get_arg(cmd, k)); // Duplicate each argument
+        if (NULL == filtered_args[k]) { 
+            perror("create_arguments_for_redirection: strdup fail"); // Print error if duplication fails
+            return NULL; // Return NULL on failure
         }
     }
-    assert(strcmp(filtered_args[count-1],"<") != 0);
-    //terminate the arguments with NULL so it can be used with fexecve
+    assert(strcmp(filtered_args[count - 1], "<") != 0); // Ensure last copied argument is not "<"
+
+    // Add the NULL terminator at the end of the argument list
     filtered_args[count] = NULL;
 
-    assert(strcmp(filtered_args[count-1],"<") != 0);
-    assert(filtered_args[count] == NULL);
+    assert(strcmp(filtered_args[count - 1], "<") != 0); // Double-check last argument is valid
+    assert(filtered_args[count] == NULL); // Ensure NULL terminator is correctly added
+
     return filtered_args;
 }
 
 
+//------------------------
 //PROCESS RELATED ROUTINES
+//------------------------
 int import_command_to_memfd(const char* path) {
+    // Check if the path is valid
+    if (!path) {
+        printf("INVALID file path to search in mounted filesystem\n");
+        return COMMAND_NOT_FOUND;
+    }
     assert(path != NULL); 
     if(!is_valid_path(path)){
         printf("INVALID PATH: {%s}\n",path);
         return COMMAND_NOT_FOUND;
     }
-    assert(is_valid_path(path));    //! path is invalid
-    if (!path) {
-        printf("INVALID file path to search in mounted filesystem\n");
-        return COMMAND_NOT_FOUND;
-    }
+    assert(is_valid_path(path)); 
     
-    // Open the file in the nqp filesystem
+    // Try to open the file in the nqp filesystem
     int nqp_fd = nqp_open(path);
     if (nqp_fd == NQP_FILE_NOT_FOUND) {
         printf("import_command_to_memfd:Command Not Found in mounted filesystem {%s}\n", path);
         return COMMAND_NOT_FOUND;
     }
     
-    // Create a memory file to store the command
+    // Make a new file in memory to store the command
     int mem_fd = memfd_create(path, 0);
-    if (mem_fd < 0) {   //file creation failed
+    if (mem_fd < 0) {   // If making the memory file failed
         nqp_close(nqp_fd);
         return COMMAND_EXECUTION_FAILED;
     }
     
-    // Read the command file from NQP filesystem and write to memory file
-    lseek(mem_fd, 0, SEEK_SET);
+    // Copy the command from the nqp file to the memory file
+    lseek(mem_fd, 0, SEEK_SET);  // Go to the start of the memory file
     char buffer[READ_BUFFER_SIZE] = {0};
     ssize_t bytes_read;
     while ((bytes_read = nqp_read(nqp_fd, buffer, READ_BUFFER_SIZE)) > 0) {
-        write(mem_fd, buffer, bytes_read);
-        memset(buffer, 0, READ_BUFFER_SIZE);    //reset the buffer
+        write(mem_fd, buffer, bytes_read);  // Write what we read to the memory file
+        memset(buffer, 0, READ_BUFFER_SIZE);    // Clear the buffer for next use
     }
     
-    // Close the NQP file and reset the memory file position
-    nqp_close(nqp_fd);
-    lseek(mem_fd, 0, SEEK_SET);
+    // Clean up and prepare the memory file for use
+    nqp_close(nqp_fd);  // Close the nqp file
+    lseek(mem_fd, 0, SEEK_SET);  // Go back to the start of the memory file
     
-    return mem_fd;
+    return mem_fd;  // Return the memory file descriptor
 }
 int import_command_data(const Command* cmd, const char* curr_path, char *envp[]){
     const char* argv_0 = command_get_arg(cmd,0);
@@ -723,7 +763,7 @@ int handle_input_redirection(const Command* cmd, const char* cwd_path){
             nqp_close(input_fd);            //close the input file in the nqp file system
             lseek(mem_fd, 0, SEEK_SET);     //reset read offset of the memory input file
 
-            printf("handle_input_redirection: memfd = {%d}\n", mem_fd);
+            //printf("handle_input_redirection: memfd = {%d}\n", mem_fd);
             return mem_fd;  //return the fd of memory input file
         }
     }
@@ -1490,6 +1530,59 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
     
     return OPERATION_SUCCEED;
 }
+/**
+ * Sets up a pipe to capture output from the last command in a pipeline
+ * and duplicate it to both stdout and a log file
+ * 
+ * @param pipe_cmds The pipe commands structure
+ * @param cwd Current working directory
+ * @param envp Environment variables
+ * @param log_fd File descriptor for the log file
+ * @return Status code indicating success or failure
+ */
+int execute_pipes_with_logging(Pipe_Commands* pipe_cmds, const Curr_Dir* cwd, char *envp[]) {
+    assert(pipe_cmds != NULL);
+    assert(cwd != NULL);
+    assert(log_fd != LOG_DISABLED);
+    
+    // Create a pipe to capture output from the last command
+    int log_pipe[2];
+    if (pipe(log_pipe) == -1) {
+        perror("Failed to create log pipe");
+        return OPERATION_FAILED;
+    }
+    
+    // Execute the pipe commands with the write end of our log pipe as output
+    int result = execute_pipes(pipe_cmds, cwd, envp, log_pipe[1]);
+    
+    // Close write end of the pipe now that all commands have been started
+    close(log_pipe[1]);
+    
+    // Read from the pipe and write to both stdout and log file
+    char buffer[READ_BUFFER_SIZE];
+    ssize_t bytes_read;
+    
+    while ((bytes_read = read(log_pipe[0], buffer, READ_BUFFER_SIZE)) > 0) {
+        // Write to stdout
+        if (write(STDOUT_FILENO, buffer, bytes_read) != bytes_read) {
+            perror("Failed to write to stdout");
+            close(log_pipe[0]);
+            return OPERATION_FAILED;
+        }
+        
+        // Write to log file
+        if (write(log_fd, buffer, bytes_read) != bytes_read) {
+            perror("Failed to write to log file");
+            close(log_pipe[0]);
+            return OPERATION_FAILED;
+        }
+    }
+    
+    // Close read end of the pipe
+    close(log_pipe[0]);
+    
+    return result;
+}
 
 //PIPES RELATED ROUTINES
 int calc_num_pipes_marker(const Command* cmd) {
@@ -1635,10 +1728,18 @@ int main( int argc, char *argv[], char *envp[] ){
             assert(pipe_commands_is_valid(pipe_cmds));
             if(NULL == pipe_cmds) continue;
 
-            //execute the pipe commands
-            int return_code = execute_pipes(pipe_cmds,cwd,envp,STDOUT_FILENO);
-            assert(return_code != OPERATION_FAILED);
-            //printf("Pipes return code: %d",return_code);
+            int return_code;
+            if (log_fd != LOG_DISABLED) { // logging is enabled, and command has pipe init
+                return_code = execute_pipes_with_logging(pipe_cmds, cwd, envp);
+            } else { // logging is disabled, and command has pipe init
+                return_code = execute_pipes(pipe_cmds, cwd, envp, STDOUT_FILENO);
+            }
+            
+            if (return_code != OPERATION_SUCCEED) {
+                fprintf(stderr, "Pipe execution failed with code: %d\n", return_code);
+            }
+
+            pipe_commands_destroy(pipe_cmds);
             command_destroy(new_command);
             continue;   //continue reading next command
         }
