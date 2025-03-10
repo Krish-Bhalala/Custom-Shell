@@ -1116,7 +1116,7 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
     
     return OPERATION_SUCCEED;
 }
-*/
+
 int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], const int output_fd) {
     printf("%d\n",output_fd);
     if (NULL == cmd_list || NULL == cwd || !is_valid_curr_dir(cwd)) {
@@ -1234,6 +1234,260 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
         waitpid(child_pids[i], NULL, 0);
     }
 
+    return OPERATION_SUCCEED;
+}
+*/
+/**
+ * Execute a series of piped commands
+ * 
+ * @param cmd_list The list of commands to execute
+ * @param cwd The current working directory
+ * @param envp Environment variables
+ * @param output_fd File descriptor for output (STDOUT_FILENO or log file)
+ * @return Status code indicating success or failure
+ */
+int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], const int output_fd) {
+    assert(cmd_list != NULL);
+    assert(cwd != NULL);
+    assert(output_fd >= 0);
+    
+    if (!pipe_commands_is_valid(cmd_list)) {
+        fprintf(stderr, "Invalid pipe commands\n");
+        return INVALID_ARGUMENTS;
+    }
+    
+    int num_commands = cmd_list->num_commands;
+    assert(num_commands > 0);
+    
+    // Special case: if only one command, just execute it directly
+    if (num_commands == 1) {
+        Command* cmd = pipe_commands_get_command_at(cmd_list, 0);
+        if (!execute_command(cmd, (Curr_Dir*)cwd, envp)) {
+            return OPERATION_FAILED;
+        }
+        return OPERATION_SUCCEED;
+    }
+    
+    // Create pipes for all commands except the last one
+    int pipes[num_commands - 1][2];
+    for (int i = 0; i < num_commands - 1; i++) {
+        if (pipe(pipes[i]) == -1) {
+            perror("Error creating pipe");
+            
+            // Close any pipes we've already created
+            for (int j = 0; j < i; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+            
+            return REDIRECTION_FAILED;
+        }
+    }
+    
+    // Array to store all child process IDs
+    pid_t child_pids[num_commands];
+    
+    // Run all commands with appropriate piping
+    for (int i = 0; i < num_commands; i++) {
+        Command* current_cmd = pipe_commands_get_command_at(cmd_list, i);
+        assert(current_cmd != NULL);
+        
+        pid_t pid = fork();
+        
+        if (pid == -1) {
+            perror("Fork failed");
+            
+            // Close all pipes
+            for (int j = 0; j < num_commands - 1; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+            
+            return OPERATION_FAILED;
+        }
+        
+        if (pid == 0) {  // Child process
+            // Set up input redirection for first command if needed
+            if (i == 0) {
+                // Check for input redirection symbol "<"
+                for (int j = 0; j < current_cmd->argc; j++) {
+                    if (strcmp(current_cmd->argv[j], "<") == 0 && j + 1 < current_cmd->argc) {
+                        // Found redirection symbol and filename
+                        const char* filename = current_cmd->argv[j + 1];
+                        char inputfile_absolute_path[MAX_LINE_SIZE] = {0};
+                        if(cwd->path[strlen(cwd->path) - 1] != '/'){
+                            snprintf(inputfile_absolute_path, MAX_LINE_SIZE, "%s/%s", cwd->path, filename);
+                        }else{
+                            snprintf(inputfile_absolute_path, MAX_LINE_SIZE, "%s%s", cwd->path, filename);
+                        }
+                        assert(is_valid_path(inputfile_absolute_path));
+
+                        // Open the file from our file system
+                        int fd = nqp_open(inputfile_absolute_path);
+                        if (fd == NQP_FILE_NOT_FOUND) {
+                            fprintf(stderr, "Failed to open file %s for redirection at path {%s}\n", filename, inputfile_absolute_path);
+                            exit(EXIT_FAILURE);
+                        }
+                        
+                        // Create memory-backed file descriptor
+                        int memfd = memfd_create("input_redirect", 0);
+                        if (memfd == -1) {
+                            perror("memfd_create failed");
+                            exit(EXIT_FAILURE);
+                        }
+                        
+                        // Read file content into memory
+                        char buffer[READ_BUFFER_SIZE];
+                        size_t bytes_read;
+                        while ((bytes_read = nqp_read(fd, buffer, READ_BUFFER_SIZE)) > 0) {
+                            if (write(memfd, buffer, bytes_read) == -1) {
+                                perror("write to memfd failed");
+                                exit(EXIT_FAILURE);
+                            }
+                        }
+                        
+                        // Close the NQP file
+                        nqp_close(fd);
+                        
+                        // Reset the mem fd offset to the beginning
+                        if (lseek(memfd, 0, SEEK_SET) == -1) {
+                            perror("lseek failed");
+                            exit(EXIT_FAILURE);
+                        }
+                        
+                        // Redirect stdin to our memory fd
+                        if (dup2(memfd, STDIN_FILENO) == -1) {
+                            perror("dup2 failed for stdin redirection");
+                            exit(EXIT_FAILURE);
+                        }
+                        
+                        close(memfd);
+                        
+                        // Create new args without the redirection symbols
+                        char** filtered_args = create_arguments_for_redirection(current_cmd);
+                        
+                        // Replace the command arguments
+                        for (int k = 0; k < current_cmd->argc; k++) {
+                            free(current_cmd->argv[k]);
+                        }
+                        free(current_cmd->argv);
+                        
+                        current_cmd->argv = filtered_args;
+                        
+                        // Count new argc
+                        int new_argc = 0;
+                        while (filtered_args[new_argc] != NULL) {
+                            new_argc++;
+                        }
+                        current_cmd->argc = new_argc;
+                        
+                        break;
+                    }
+                }
+            }
+            
+            // Set up stdin (input) from previous pipe if not first command
+            if (i > 0) {
+                if (dup2(pipes[i-1][0], STDIN_FILENO) == -1) {
+                    perror("dup2 failed for stdin");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            
+            // Set up stdout (output) to next pipe if not last command
+            if (i < num_commands - 1) {
+                if (dup2(pipes[i][1], STDOUT_FILENO) == -1) {
+                    perror("dup2 failed for stdout");
+                    exit(EXIT_FAILURE);
+                }
+            } else if (output_fd != STDOUT_FILENO) {
+                // Last command and output_fd is specified (for logging)
+                if (dup2(output_fd, STDOUT_FILENO) == -1) {
+                    perror("dup2 failed for stdout to log");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            
+            // Close all pipe file descriptors
+            for (int j = 0; j < num_commands - 1; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+            
+            // Execute the command using NQP file system
+            const char* cmd_name = current_cmd->argv[0];
+            char cmd_absolute_path[MAX_LINE_SIZE] = {0};
+            if(cwd->path[strlen(cwd->path) - 1] != '/'){
+                snprintf(cmd_absolute_path, MAX_LINE_SIZE, "%s/%s", cwd->path, cmd_name);
+            }else{
+                snprintf(cmd_absolute_path, MAX_LINE_SIZE, "%s%s", cwd->path, cmd_name);
+            }
+            assert(is_valid_path(cmd_absolute_path));
+            
+            // Open and read the executable from the file system
+            int cmd_fd = nqp_open(cmd_absolute_path);
+            if (cmd_fd == NQP_FILE_NOT_FOUND) {
+                fprintf(stderr, "Command not found: %s\n", cmd_name);
+                exit(EXIT_FAILURE);
+            }
+            
+            // Create a memory-backed file for the executable
+            int exec_memfd = memfd_create("exec", 0);
+            if (exec_memfd == -1) {
+                perror("memfd_create failed");
+                exit(EXIT_FAILURE);
+            }
+            
+            // Read the executable content into memory
+            char buffer[READ_BUFFER_SIZE];
+            size_t bytes_read;
+            while ((bytes_read = nqp_read(cmd_fd, buffer, READ_BUFFER_SIZE)) > 0) {
+                if (write(exec_memfd, buffer, bytes_read) == -1) {
+                    perror("write to memfd failed");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            
+            // Close the NQP file
+            nqp_close(cmd_fd);
+            
+            // Rewind the memory fd to the beginning
+            if (lseek(exec_memfd, 0, SEEK_SET) == -1) {
+                perror("lseek failed");
+                exit(EXIT_FAILURE);
+            }
+            
+            // Execute the command
+            if (fexecve(exec_memfd, current_cmd->argv, envp) == -1) {
+                perror("fexecve failed");
+                exit(EXIT_FAILURE);
+            }
+            
+            // Should never reach here
+            fprintf(stderr, "Exec failed\n");
+            exit(EXIT_FAILURE);
+        }
+        
+        // Store child PID for later waiting
+        child_pids[i] = pid;
+    }
+    
+    // Parent process - close all pipe file descriptors
+    for (int i = 0; i < num_commands - 1; i++) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+    
+    // Wait for all child processes to complete
+    for (int i = 0; i < num_commands; i++) {
+        int status;
+        waitpid(child_pids[i], &status, 0);
+        
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            fprintf(stderr, "Command %d exited with status %d\n", i, WEXITSTATUS(status));
+        }
+    }
+    
     return OPERATION_SUCCEED;
 }
 
@@ -1383,7 +1637,8 @@ int main( int argc, char *argv[], char *envp[] ){
 
             //execute the pipe commands
             int return_code = execute_pipes(pipe_cmds,cwd,envp,STDOUT_FILENO);
-            printf("Pipes return code: %d",return_code);
+            assert(return_code != OPERATION_FAILED);
+            //printf("Pipes return code: %d",return_code);
             command_destroy(new_command);
             continue;   //continue reading next command
         }
