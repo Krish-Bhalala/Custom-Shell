@@ -1,71 +1,118 @@
+# CustomShell: A Process-based Shell with exFAT Drivers
+
+A robust, processes-oriented Unix-like shell implemented in C that interfaces with a custom **exFAT read driver**. This project demonstrates deep understanding of systems programming, filesystem specifications, process management, and in-memory execution.
+
+## Key Features
+
+- **Custom exFAT Driver**: Full implementation of a read-only driver for the exFAT filesystem, allowing the shell to interact with disk images directly.
+- **In-Memory Execution**: Executes external commands by loading binary data from the exFAT filesystem into an anonymous memory file (`memfd_create`) and running it via `fexecve`.
+- **Command Piping & Redirection**: Support for complex command chains using pipes (`|`) and input redirection (`<`).
+- **Rich Built-ins**: Native support for `ls`, `cd`, `pwd`, and `logging` controls.
+- **Advanced CLI**: Enhanced user experience using the GNU Readline library for command history and navigation.
+
 ---
-title: COMP 3430 Operating Systems
-subtitle: "Assignment 2: shell!"
-date: Winter 2025
+
+## Architecture & Logic Flow
+
+The project is divided into two main layers: the **Shell Interface** and the **exFAT Read Drivers**.
+
+### 1. exFAT Read Driver Logic
+The driver handles the low-level details of parsing the exFAT structure, traversing cluster chains, and managing file descriptors within the mounted disk image.
+
+```mermaid
+graph TD
+    subgraph Initialization
+    A[nqp_mount] --> B{Superblock Valid?}
+    B -- Yes --> C[Init Open File Table & Bitmap]
+    B -- No --> D[Error: NQP_FSCK_FAIL]
+    end
+
+    subgraph File_Operations
+    E[nqp_open path] --> F[Start Traverse from Root]
+    F --> G[Parse Directory Clusters]
+    G --> H{Found Entry?}
+    H -- Yes --> I[Assign FD & Update OFT]
+    H -- No --> J[Return -1]
+
+    K[nqp_read fd] --> L[Lookup Cluster Chain]
+    L --> M[Read Sectors into Buffer]
+    M --> N[Update Read Offset]
+    end
+```
+
+### 2. Whole Project Flow
+The shell orchestrates user input, command parsing, and process execution, bridging the physical disk image to active execution contexts.
+
+```mermaid
+graph TD
+    subgraph Shell_Main_Loop
+    Start((Start)) --> Loop[Read Input via readline]
+    Loop --> Parse[command_create: Tokenize & Validate]
+    Parse --> Dispatch{Command Type?}
+    end
+
+    subgraph Builtins
+    Dispatch -- Built-in --> exec_built[Exec: command_ls / command_cd / command_pwd]
+    end
+
+    subgraph External_Execution
+    Dispatch -- External --> Import[import_command_data]
+    Import --> Open[nqp_open in exFAT Image]
+    Open --> MemFile[memfd_create: Anonymous Mem File]
+    MemFile --> Copy[nqp_read: Copy Binary to Mem]
+    Copy --> Redirect[handle_input_redirection]
+    Redirect --> Fork[fork & fexecve]
+    end
+
+    subgraph Cleanup
+    exec_built --> Loop
+    Fork --> Wait[waitpid]
+    Wait --> Loop
+    end
+```
+
 ---
 
-Overview
-========
+## Build & Usage
 
-This directory contains the following:
+### Prerequisites
+- `clang` or `gcc`
+- `libreadline` development headers
 
-* This `README.md` file (you're reading it!).
-* A `Makefile` that can build the sample code.
-* A generic, POSIX-like interface for opening and reading files in a file system
-  (`nqp_io.h`).
-* A pre-compiled implementation of this interface (`nqp_exfat.o`).
-* A sample exFAT-formatted volume containing some files and programs
-  (`root.img`).
-* An initial template implementation of a shell that works with the provided
-  volume.
-
-Building and running
-====================
-
-The only runnable program in this directory is `nqp_shell.c`.
-
-You can compile this program on the command line:
-
+### Build the Program
 ```bash
-make
+make all
 ```
 
-You can run this program on the command line by passing the volume that you
-would like to have the shell use as a root directory:
-
+### Run the Shell
 ```bash
-./nqp_shell root.img
+# Default run with root.img
+make run
+
+# Run with custom logging
+make run_logs LOG_FILE=session.log
 ```
 
-`nqp_exfat.o`
--------------
-
-This is a pre-compiled implementation of the interface defined in `nqp_io.h`.
-The file was compiled on Aviary. This *may* work on other x86_64 Linux
-installations (e.g., Windows Subsystem for Linux) but will not work on macOS
-(neither Intel nor Apple Silicon).
-
-### macOS and Lima
-
-This *may* work in something like Lima, assuming that you are [running an x86_64
-version of Linux within Lima].
-
-This repository also now contains an arm-compiled version of the repository.
-
-To build with the arm version, you'll have to specify a variable when you run
-`make`:
-
+### Debugging
+This project was developed with a heavy emphasis on robust debugging:
 ```bash
-make NQP_EXFAT=nqp_exfat_arm.o
+# Debug using LLDB GUI
+make debug
 ```
 
-[running an x86_64 version of Linux within Lima]: https://github.com/lima-vm/lima/discussions/1797
+---
 
-Using your own implementation
------------------------------
+## What I Learned
 
-If you would like to use your own implementation of exFAT for `nqp_io.h`, you
-will need to implement one additional function. You are welcome to implement
-the function on your own (it's called `nqp_vol_label`); this function should
-read the volume label directory entry from the root directory, pass that to
-`unicode2ascii`, and then return the string returned by `unicode2ascii`.
+This project was a deep dive into the internals of operating systems and filesystems. Key takeaways include:
+
+- **Filesystem Internals**: Gained a granular understanding of how **exFAT** organizes data, from the Main Boot Region to Cluster Heap traversal and Directory Entry sets.
+- **Advanced Debugging with LLDB/GDB**: Moving beyond `printf`, I mastered the **LLDB GUI (TUI mode)**. Using frame inspection, memory watches, and step-through debugging allowed me to solve complex state-related bugs in the FAT chain traversal.
+- **Process Management**: Learned the intricacies of the `fork-exec` model, specifically how to manage file descriptors across pipes and handle process synchronization with `waitpid`.
+- **In-Memory Security & Efficiency**: Implemented **anonymous file descriptors** via `memfd_create`. This allows executing binaries without them ever touching the host's actual disk, increasing both speed and security.
+- **C Memory Safety**: Reinforced strict memory management practices, ensuring all dynamically allocated command objects and directory entries are properly cleaned up.
+
+---
+
+## Author
+**Krish Bhalala**

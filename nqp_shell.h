@@ -4,6 +4,7 @@
 #include <string.h>
 
 //CURRENT DIRECTORY STRUCT
+//keeps track of the current working directory
 typedef struct{
     char path[MAX_LINE_SIZE];
 } Curr_Dir;
@@ -13,9 +14,10 @@ void destroy_curr_dir(Curr_Dir* cwd);
 void set_path(Curr_Dir* cwd,const char* path);
 
 // COMMAND OBJECT
+// stores info about command and its args
 typedef struct {
-    int argc;
-    char** argv;
+    int argc;       //total number of args
+    char** argv;    //NULL termnated arguments array 
 } Command;
 //constructor
 Command* command_create(const char* input);
@@ -30,6 +32,8 @@ void command_print(const Command* cmd);
 //instance methods
 bool execute_command(const Command* cmd, Curr_Dir* cwd, char *envp[]);
 
+//PIPE COMMANDS OBEJCT
+//stores teh info about the command containing pipes and its args 
 typedef struct{
     int num_commands;   //total number of commands in the pipe
     Command** commands; //array of commands
@@ -41,7 +45,6 @@ int execute_pipes(Pipe_Commands* cmd_list, const Curr_Dir* cwd, char *envp[], co
 Command* pipe_commands_get_command_at(const Pipe_Commands* cmd_list, const int idx);
 
 //PROCESS RELATED ROUTINES
-int import_command_to_memfd(const char* path);
 int import_command_data(const Command* cmd, const char* path, char *envp[]);
 int handle_input_redirection(const Command* cmd, const char* cwd_path);
 
@@ -50,7 +53,8 @@ int calc_num_pipes_marker(const Command* cmd);
 bool validate_pipe_positions(const Command* cmd);
 
 //LOGGING RELATED ROUTINES
-void log_output(const char *message);
+void custom_print(const char *message);
+
 
 //validators
 bool is_valid_string(const char* str);
