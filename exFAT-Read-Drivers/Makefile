@@ -19,11 +19,11 @@ endif
 ifndef USE_LIBC_INSTEAD
 all: cat ls paste
 
-cat: nqp_exfat.o
+cat: exfat_driver.o
 
-ls: nqp_exfat.o
+ls: exfat_driver.o
 
-paste: nqp_exfat.o
+paste: exfat_driver.o
 
 else
 

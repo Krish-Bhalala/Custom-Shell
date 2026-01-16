@@ -12,10 +12,10 @@ This directory contains the following:
 * This `README.md` file (you're reading it!).
 * A `Makefile` that can build some sample code.
 * A generic, POSIX-like interface for opening and reading files in a file
-  system (`nqp_io.h`).
+  system (`exfat_io.h`).
 * An example of code that might use this interface (`cat.c`, `ls.c`, and
   `paste.c`).
-* An exFAT-specific set of types and values (`nqp_exfat_types.h`).
+* An exFAT-specific set of types and values (`exfat_types.h`).
 
 Building and running
 ====================
@@ -65,11 +65,11 @@ whatever was written to standard output by `cat`.
 
 ### Special options for compiling `cat.c`
 
-While the code for `cat.c` depends on your implementation of `nqp_io.h`, it's
-been written in a way that we can replace calls to `nqp_*` with their libc
-equivalent (i.e., instead of calling `nqp_read`, we can call `read`).
+While the code for `cat.c` depends on your implementation of `exfat_io.h`, it's
+been written in a way that we can replace calls to `exfat_*` with their libc
+equivalent (i.e., instead of calling `exfat_read`, we can call `read`).
 
-You can compile and run *just* `cat.c` without having implemented any `nqp_*`
+You can compile and run *just* `cat.c` without having implemented any `exfat_*`
 functions using a special flag to `make`:
 
 ```bash

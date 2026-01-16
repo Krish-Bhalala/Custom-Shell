@@ -22,19 +22,19 @@ The driver handles the low-level details of parsing the exFAT structure, travers
 ```mermaid
 graph TD
     subgraph Initialization
-    A[nqp_mount] --> B{Superblock Valid?}
+    A[exfat_mount] --> B{Superblock Valid?}
     B -- Yes --> C[Init Open File Table & Bitmap]
-    B -- No --> D[Error: NQP_FSCK_FAIL]
+    B -- No --> D[Error: EXFAT_FSCK_FAIL]
     end
 
     subgraph File_Operations
-    E[nqp_open path] --> F[Start Traverse from Root]
+    E[exfat_open path] --> F[Start Traverse from Root]
     F --> G[Parse Directory Clusters]
     G --> H{Found Entry?}
     H -- Yes --> I[Assign FD & Update OFT]
     H -- No --> J[Return -1]
 
-    K[nqp_read fd] --> L[Lookup Cluster Chain]
+    K[exfat_read fd] --> L[Lookup Cluster Chain]
     L --> M[Read Sectors into Buffer]
     M --> N[Update Read Offset]
     end
@@ -57,9 +57,9 @@ graph TD
 
     subgraph External_Execution
     Dispatch -- External --> Import[import_command_data]
-    Import --> Open[nqp_open in exFAT Image]
+    Import --> Open[exfat_open in exFAT Image]
     Open --> MemFile[memfd_create: Anonymous Mem File]
-    MemFile --> Copy[nqp_read: Copy Binary to Mem]
+    MemFile --> Copy[exfat_read: Copy Binary to Mem]
     Copy --> Redirect[handle_input_redirection]
     Redirect --> Fork[fork & fexecve]
     end
