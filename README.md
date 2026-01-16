@@ -10,6 +10,9 @@ A robust, processes-oriented Unix-like shell implemented in C that interfaces wi
 - **Rich Built-ins**: Native support for `ls`, `cd`, `pwd`, and `logging` controls.
 - **Advanced CLI**: Enhanced user experience using the GNU Readline library for command history and navigation.
 
+> [!CAUTION]
+> **Academic Integrity Notice**: To prevent academic misconduct incidents from future students in future course offerings, I have intentionally made sure this code doesn't compile or run at all. Feel free to reach out if you want to talk about a working version.
+
 ---
 
 ## Architecture & Logic Flow

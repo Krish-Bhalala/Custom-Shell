@@ -1,138 +1,144 @@
+# exFAT Read-Only Driver
+
+A custom read-only driver for the **exFAT (Extended File Allocation Table)** filesystem, providing a POSIX-like interface (`open`, `read`, `close`, `getdents`) for interacting with exFAT disk images.
+
+> [!CAUTION]
+> **Academic Integrity Notice**: To prevent academic misconduct incidents from future students in future course offerings, I have intentionally made sure this code doesn't compile or run at all. Feel free to reach out if you want to talk about a working version.
+
 ---
-title: COMP 3430 Operating Systems
-subtitle: "Assignment 1: implementing exFAT"
-date: Winter 2025
----
 
-Overview
-========
+## Overview
 
-This directory contains the following:
+This directory contains:
 
-* This `README.md` file (you're reading it!).
-* A `Makefile` that can build some sample code.
-* A generic, POSIX-like interface for opening and reading files in a file
-  system (`exfat_io.h`).
-* An example of code that might use this interface (`cat.c`, `ls.c`, and
-  `paste.c`).
+* A generic, POSIX-like interface for opening and reading files in a file system (`exfat_io.h`).
+* Example programs that use this interface (`cat.c`, `ls.c`, and `paste.c`).
 * An exFAT-specific set of types and values (`exfat_types.h`).
+* The core driver implementation (`exfat_driver.c`).
 
-Building and running
-====================
+---
 
-There are three sample programs in this repository:
+## Architecture & Data Flow
 
-* `cat.c`
-* `ls.c`
-* `paste.c`
+The driver is designed as a layered system that translates high-level path requests into low-level sector offsets.
 
-All three of these programs can be compiled on the command line:
+```mermaid
+graph TD
+    subgraph API_Layer [Public API]
+        direction TB
+        N_MT[exfat_mount]
+        N_OP[exfat_open]
+        N_RD[exfat_read]
+        N_GD[exfat_getdents]
+        N_CL[exfat_close]
+    end
 
-```bash
-make
+    subgraph Logic_Layer [Core Logic]
+        direction TB
+        TRV[Path Traversal]
+        GDS[exfat_getdent_set]
+        BCC[build_cluster_chain]
+        ASCII[unicode2ascii]
+    end
+
+    subgraph Data_Structures [State Management]
+        MBR[(Main Boot Record)]
+        OFT[(Open File Table)]
+        BITMAP[(OFT Bitmap)]
+    end
+
+    subgraph Physical_Layer [Disk Operations]
+        FAT[FAT Region]
+        HEAP[Cluster Heap]
+    end
+
+    %% Interactions
+    N_MT -->|Store Metadata| MBR
+    N_OP -->|Parse Path| TRV
+    TRV -->|Search| GDS
+    GDS -->|Link Clusters| BCC
+    BCC -->|Lookup| FAT
+    N_RD -->|Direct Read| HEAP
+    GDS -->|Label Conversion| ASCII
+    
+    %% Table Management
+    N_OP -->|Alloc Entry| OFT
+    N_CL -->|Free Entry| OFT
+    OFT <--> BITMAP
 ```
 
-`cat.c`
--------
+---
 
-The program `cat.c` expects two or more arguments on the command-line
+## Key Components
 
-1. The filename of the volume it should read from (when using libc instead this
-   argument is ignored).
-2. The files that it should print to standard output. The paths to the files
-   should be absolute paths within the volume.
+### 1. Main Boot Record (MBR) Parsing
+Upon calling `exfat_mount`, the driver reads the first sector of the image to populate the `main_boot_record` structure. Significant fields tracked include:
+- `fat_offset` & `fat_length`: Location of the File Allocation Table.
+- `cluster_heap_offset`: Start of the actual data clusters.
+- `bytes_per_sector_shift` & `sectors_per_cluster_shift`: Used for calculating physical addresses.
 
-For example, to print the `README.md` in `one-file.img` from the [assignment 1
-volumes repository], you would run something like:
+### 2. Open File Table (OFT)
+To stay process-oriented, the driver maintains an internal `open_file_table`. Each entry stores:
+- `first_cluster`: The starting point of the file.
+- `cluster_chain`: An array of all clusters belonging to the file, pre-computed for performance.
+- `current_position`: The byte offset for subsequent read calls.
 
-```bash
-./cat one-file.img /README.md
-```
+### 3. exFAT Directory Entry Sets
+ExFAT uses a "set" of entries to describe a single file. `exfat_getdent_set` is responsible for grouping:
+1. **File Directory Entry**: Contains attributes and secondary count.
+2. **Stream Extension Entry**: Contains the `first_cluster` and `data_length`.
+3. **File Name Entries**: One or more entries containing Unicode characters of the name.
 
-This should print out the contents of `README.md` to standard output.
+---
 
-If you want to "print" a non-text file (like a picture in `fragmented.img`v),
-you will probably want to redirect standard output to a file, something like:
+## File Manifest
 
-```bash
-./cat fragmented.img /picture.jpg > picture.jpg
-```
+| File | Description |
+| :--- | :--- |
+| `exfat_driver.c` | Main driver logic: mounting, opening, reading, and traversal. |
+| `exfat_types.h` | Struct definitions for MBR, Dentries, and offsets based on exFAT spec. |
+| `exfat_io.h` | Shared error codes and public function signatures. |
 
-This will make a new file in the current folder called `picture.jpg` containing
-whatever was written to standard output by `cat`.
+---
 
-[assignment 1 volumes repository]: https://code.cs.umanitoba.ca/comp3430-winter2025/assignment1-volumes
+## Sample Programs
 
-### Special options for compiling `cat.c`
-
-While the code for `cat.c` depends on your implementation of `exfat_io.h`, it's
-been written in a way that we can replace calls to `exfat_*` with their libc
-equivalent (i.e., instead of calling `exfat_read`, we can call `read`).
-
-You can compile and run *just* `cat.c` without having implemented any `exfat_*`
-functions using a special flag to `make`:
-
-```bash
-make clean # in case you already built it, then
-make USE_LIBC_INSTEAD=1
-```
-
-If you have compiled `cat` this way, you will need to pass it relative paths
-instead of absolute, and the files/folders will have to exist alongside the
-program, so for example:
+### `cat.c`
+Prints the contents of files from an exFAT image to standard output.
 
 ```bash
-echo 'hello' > hello.txt
-./cat img hello.txt
+./cat disk.img /path/to/file.txt
 ```
 
-In this case, `cat` will ignore the second argument passed to it and print the
-content of `hello.txt` to standard output. 
-
-This mode is only useful to get a sense of what `cat` might produce as output,
-but it does not interact with any exFAT code at all.
-
-`ls.c`
-------
-
-`ls.c` takes two arguments on the command-line:
-
-1. The filename of the volume it should read from.
-2. The directory for which it should print the contents to standard output.
-
-For example, to list the contents of the root directory from the file
-`one-file.img`, you would run the following command:
+### `ls.c`
+Lists directory contents from an exFAT image.
 
 ```bash
-./ls one-file.img /
+./ls disk.img /path/to/directory
 ```
 
-To list the contents of the `assignment1-template` directory in `normal.img`,
-you would run:
+### `paste.c`
+Pastes two files side-by-side from an exFAT image.
 
 ```bash
-./ls normal.img /assignment1-template # OR
-./ls normal.img /assignment1-template/
+./paste disk.img /file1.txt /file2.txt
 ```
 
-`paste.c`
----------
+---
 
-`paste.c` takes three arguments on the command-line:
+## Technical Implementation Details
 
-1. The filename of the volume it should read from.
-2. The two files that it should paste together.
+- **Path Resolution**: The `exfat_open` function tokenizes paths (e.g., `/folder/file.txt`) and iteratively searches directory entry sets cluster-by-cluster.
+- **Cluster Chain Cache**: To avoid repeated FAT lookups during `read` calls, the entire cluster chain is resolved and stored in memory when a file is first opened.
+- **Anonymous Memory Execution**: In the main shell, data read via `exfat_read` is piped into `memfd_create` to allow executing exFAT binaries as native processes.
 
-For example, to paste `README.md` beside itself from `one-file.img`, you would
-run the following command:
+---
 
-```bash
-./paste one-file.img /README.md /README.md
-```
+## What I Learned
 
-To paste together the two files in `two-text-root.img`, you would run the
-following command:
+Building this driver provided deep insights into:
 
-```bash
-./paste two-file-root.img /iliad.txt /odyssey.txt
-```
+- **Filesystem Internals**: Understanding how exFAT organizes data, from the Main Boot Region to Cluster Heap traversal and Directory Entry sets.
+- **Low-Level I/O**: Working directly with sector offsets, binary data parsing, and bit-level struct packing.
+- **Memory Management**: Implementing robust allocation/deallocation patterns for cluster chains and file descriptors.
+- **Debugging Complex State**: Using LLDB/GDB to trace through multi-layered FAT chain traversals.

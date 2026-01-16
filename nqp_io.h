@@ -5,41 +5,37 @@
 
 #define MAX_OPEN_FILES 1024
 
-typedef enum NQP_FS_TYPE
-{
-    NQP_FS_EXFAT,
+typedef enum NQP_FS_TYPE {
+  NQP_FS_EXFAT,
 
-    // NQP_FS_TYPES should always be last
-    NQP_FS_TYPES
+  // NQP_FS_TYPES should always be last
+  NQP_FS_TYPES
 } nqp_fs_type;
 
-typedef enum NQP_DIRECTORY_ENTRY_TYPE
-{
-    DT_DIR,  // a directory
-    DT_REG,  // a regular file
+typedef enum NQP_DIRECTORY_ENTRY_TYPE {
+  DT_DIR, // a directory
+  DT_REG, // a regular file
 } nqp_dtype;
 
-typedef struct NQP_DIRECTORY_ENTRY
-{
-    uint64_t  inode_number; // the unique identifier for this entry
-    size_t    name_len;     // the number of characters in the name
-    char*     name;         // the actual name
-    nqp_dtype type;         // the type of file that this points at
+typedef struct NQP_DIRECTORY_ENTRY {
+  uint64_t inode_number; // the unique identifier for this entry
+  size_t name_len;       // the number of characters in the name
+  char *name;            // the actual name
+  nqp_dtype type;        // the type of file that this points at
 } nqp_dirent;
 
-typedef enum NQP_ERROR
-{
-    NQP_OK = 0,              // no error.
+typedef enum NQP_ERROR {
+  NQP_OK = 0, // no error.
 
-    NQP_UNSUPPORTED_FS = -1, // this file system is not supported by the
-                             // implementation.
+  NQP_UNSUPPORTED_FS = -1, // this file system is not supported by the
+                           // implementation.
 
-    NQP_FSCK_FAIL = -2,      // the file system's super block did not pass the
-                             // basic file system check.
+  NQP_FSCK_FAIL = -2, // the file system's super block did not pass the
+                      // basic file system check.
 
-    NQP_INVAL = -3,          // an invalid argment was passed.
+  NQP_INVAL = -3, // an invalid argment was passed.
 
-    NQP_FILE_NOT_FOUND = -4, // no file with the given name was found.
+  NQP_FILE_NOT_FOUND = -4, // no file with the given name was found.
 
 } nqp_error;
 
@@ -49,7 +45,7 @@ typedef enum NQP_ERROR
  * This function must be called before interacting with any other nqp_*
  * functions (they will all use the "mounted" file system).
  *
- * This function does a basic file system check on the super block of the file 
+ * This function does a basic file system check on the super block of the file
  * system being mounted.
  *
  * Parameters:
@@ -60,18 +56,18 @@ typedef enum NQP_ERROR
  *         pass the basic file system check, NQP_INVAL if an invalid argument
  *         has been passed (e.g., NULL),or NQP_OK on success.
  */
-nqp_error nqp_mount( const char *source, nqp_fs_type fs_type );
+nqp_error nqp_mount(const char *source, nqp_fs_type fs_type);
 
 /**
  * "Unmount" the mounted file system.
  *
- * This function should be called to flush any changes to the file system's 
+ * This function should be called to flush any changes to the file system's
  * volume (there shouldn't be! All operations are read only.)
  *
  * Return: NQP_INVAL on error (e.g., there is no fs currently mounted) or
  *         NQP_OK on success.
  */
-nqp_error nqp_unmount( void );
+nqp_error nqp_unmount(void);
 
 /**
  * Get the volume label for the mounted file system.
@@ -79,7 +75,7 @@ nqp_error nqp_unmount( void );
  * Return: NULL on error, or the volume label for the mounted file system.
  *         Caller is responsible for free()-ing the returned pointer.
  */
-char *nqp_vol_label( void );
+char *nqp_vol_label(void);
 
 /**
  * Open the file at pathname in the "mounted" file system.
@@ -90,7 +86,7 @@ char *nqp_vol_label( void );
  * Return: -1 on error, or a nonnegative integer on success. The nonnegative
  *         integer is a file descriptor.
  */
-int nqp_open( const char *pathname );
+int nqp_open(const char *pathname);
 
 /**
  * Close the file referred to by the descriptor.
@@ -99,7 +95,7 @@ int nqp_open( const char *pathname );
  *  * fd: The file descriptor to close. Must be a nonnegative integer.
  * Return: -1 on error or 0 on success.
  */
-int nqp_close( int fd );
+int nqp_close(int fd);
 
 /**
  * Read from a file desriptor.
@@ -111,7 +107,7 @@ int nqp_close( int fd );
  *  * count: The number of bytes to read into the buffer.
  * Return: The number of bytes read, 0 at the end of the file, or -1 on error.
  */
-ssize_t nqp_read( int fd, void *buffer, size_t count );
+ssize_t nqp_read(int fd, void *buffer, size_t count);
 
 /**
  * Get the directory entries for a directory. Similar to read()ing a file, you
@@ -125,13 +121,13 @@ ssize_t nqp_read( int fd, void *buffer, size_t count );
  *        file descriptor should refer to a directory, not a file.
  *  * dirp: the buffer into which the directory entries will be written. The
  *          buffer must not be NULL.
- *  * count: the number of instances of struct NQP_DIRECTORY_ENTRY to read 
+ *  * count: the number of instances of struct NQP_DIRECTORY_ENTRY to read
  *           (e.g., to read NQP_DIRECTORY_ENTRY, you would pass 1). Must be
  *           greater than zero.
  * Return: The total number of struct NQP_DIRECTORY_ENTRY read into the buffer,
  *         0 at the end of the directory, or -1 on error.
  */
-ssize_t nqp_getdents( int fd, void *dirp, size_t count );
+ssize_t nqp_getdents(int fd, void *dirp, size_t count);
 
 #ifdef USE_LIBC_INSTEAD
 
@@ -139,11 +135,11 @@ ssize_t nqp_getdents( int fd, void *dirp, size_t count );
 #include <unistd.h>
 
 // these replace our implementation with the standard libc implementations of
-// open, read, and close, so that we can get a sense of how the tests are 
+// open, read, and close, so that we can get a sense of how the tests are
 // supposed to work.
-#define nqp_read( fd, buffer, size ) read( fd, buffer, size )
-#define nqp_open( name ) open( name, O_RDONLY )
-#define nqp_close( fd ) close( fd )
+#define nqp_read(fd, buffer, size) read(fd, buffer, size)
+#define nqp_open(name) open(name, O_RDONLY)
+#define nqp_close(fd) close(fd)
 
 // mount and unmount are not functions we would be able to call, so straight
 // up replace these with NQP_OK, code expecting NQP_OK will just pass through.
